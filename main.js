@@ -15,6 +15,7 @@ const path = require('path');
 const fs = require('fs');
 
 const APP_NAME = 'BoardRunner';
+app.setName(APP_NAME);
 
 const USER_DATA = app.getPath('userData');
 const BUNDLED_CONFIG_PATH = path.join(__dirname, 'config.json');
@@ -36,7 +37,6 @@ let watchdogInterval = null;
 let displayChangeDebounce = null;
 let recoveryHooksRegistered = false;
 
-// dashboardId -> { failures: number, cooldownUntil: number|null }
 const dashboardHealth = new Map();
 
 function ensureDir(dir) {
@@ -97,13 +97,11 @@ function defaultConfig() {
 function readConfigFile() {
   ensureDir(USER_DATA);
 
-  // If a writable user config already exists, always use that
   if (fs.existsSync(USER_CONFIG_PATH)) {
     const raw = fs.readFileSync(USER_CONFIG_PATH, 'utf8');
     return JSON.parse(raw);
   }
 
-  // Otherwise seed from bundled config if present
   let initialConfig;
 
   if (fs.existsSync(BUNDLED_CONFIG_PATH)) {
@@ -506,6 +504,7 @@ function getDashboardHealth(dashboardId) {
       cooldownUntil: null
     });
   }
+
   return dashboardHealth.get(dashboardId);
 }
 
@@ -593,15 +592,18 @@ function createDisplayWindow(displayBounds, title, partitionKey) {
 function closeAllDisplayWindows() {
   for (const [screenId, win] of displayWindows.entries()) {
     clearTimers(screenId);
+
     if (win && !win.isDestroyed()) {
       win.destroy();
     }
   }
+
   displayWindows.clear();
 }
 
 function scheduleNext(screenId, delayMs) {
   const state = runtimeState.get(screenId);
+
   if (!state) return;
 
   if (state.nextTimer) {
@@ -616,6 +618,7 @@ function scheduleNext(screenId, delayMs) {
 
 function rebuildPlaylistIfNeeded(screenId) {
   const state = runtimeState.get(screenId);
+
   if (!state) return;
 
   state.playlist = getPlaylistForScreen(screenId);
@@ -625,111 +628,285 @@ function rebuildPlaylistIfNeeded(screenId) {
   }
 }
 
+function rgbToHex(r, g, b) {
+  return '#' + [r, g, b]
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function isProbablyTransparentOrInvalid(r, g, b, a) {
+  return a === 0 || Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b);
+}
+
+async function sampleTopRightBackgroundColor(wc, logPrefix) {
+  try {
+    const owner = wc.getOwnerBrowserWindow();
+
+    if (!owner || owner.isDestroyed()) return null;
+
+    const bounds = owner.getBounds();
+
+    const sampleSize = 18;
+    const padding = 10;
+
+    const x = Math.max(0, bounds.width - sampleSize - padding);
+    const y = padding;
+
+    const image = await wc.capturePage({
+      x,
+      y,
+      width: sampleSize,
+      height: sampleSize
+    });
+
+    const bitmap = image.toBitmap();
+
+    if (!bitmap || bitmap.length < 4) {
+      writeLog(logPrefix, 'Background sample failed: empty bitmap');
+      return null;
+    }
+
+    let totalR = 0;
+    let totalG = 0;
+    let totalB = 0;
+    let count = 0;
+
+    for (let i = 0; i < bitmap.length; i += 4) {
+      const b = bitmap[i];
+      const g = bitmap[i + 1];
+      const r = bitmap[i + 2];
+      const a = bitmap[i + 3];
+
+      if (isProbablyTransparentOrInvalid(r, g, b, a)) continue;
+
+      totalR += r;
+      totalG += g;
+      totalB += b;
+      count += 1;
+    }
+
+    if (count === 0) {
+      writeLog(logPrefix, 'Background sample failed: no valid pixels');
+      return null;
+    }
+
+    const avgR = Math.round(totalR / count);
+    const avgG = Math.round(totalG / count);
+    const avgB = Math.round(totalB / count);
+
+    const hex = rgbToHex(avgR, avgG, avgB);
+
+    writeLog(logPrefix, `Sampled top-right background colour: ${hex}`);
+    return hex;
+  } catch (err) {
+    writeLog(logPrefix, `Background sample failed: ${err.message}`);
+    return null;
+  }
+}
+
+async function applyPageBackgroundColor(wc, color, logPrefix) {
+  if (!color) return;
+
+  try {
+    const owner = wc.getOwnerBrowserWindow();
+
+    if (owner && !owner.isDestroyed()) {
+      owner.setBackgroundColor(color);
+    }
+
+    await wc.executeJavaScript(`
+      (() => {
+        const color = ${JSON.stringify(color)};
+
+        try {
+          document.documentElement.style.backgroundColor = color;
+          document.body.style.backgroundColor = color;
+
+          let filler = document.getElementById('boardrunner-bg-fill');
+
+          if (!filler) {
+            filler = document.createElement('div');
+            filler.id = 'boardrunner-bg-fill';
+            filler.style.position = 'fixed';
+            filler.style.inset = '0';
+            filler.style.zIndex = '-1';
+            filler.style.pointerEvents = 'none';
+            document.documentElement.appendChild(filler);
+          }
+
+          filler.style.backgroundColor = color;
+        } catch (_) {}
+      })();
+    `, true);
+
+    writeLog(logPrefix, `Applied sampled background colour: ${color}`);
+  } catch (err) {
+    writeLog(logPrefix, `Failed to apply sampled background colour: ${err.message}`);
+  }
+}
 
 async function applyDashboardView(wc, dashboard, logPrefix) {
   const zoomFactor = Number(dashboard.zoomFactor || 1);
-  const scrollOffsetPx = Number(dashboard.scrollOffsetPx || 0);
+  const requestedOffsetPx = Math.max(0, Number(dashboard.scrollOffsetPx || 0));
 
   await wc.setZoomFactor(zoomFactor);
 
-  if (scrollOffsetPx > 0) {
+  const sampledBackgroundColor = await sampleTopRightBackgroundColor(wc, logPrefix);
+
+  if (sampledBackgroundColor) {
+    await applyPageBackgroundColor(wc, sampledBackgroundColor, logPrefix);
+  }
+
+  if (requestedOffsetPx > 0) {
     try {
       const result = await wc.executeJavaScript(`
         (() => {
-          const requestedOffset = ${scrollOffsetPx};
+          const requestedOffset = ${requestedOffsetPx};
 
-          function isScrollable(el) {
-            if (!el) return false;
+          function describe(el) {
+            if (!el) return 'none';
+            if (el === document.scrollingElement) return 'document.scrollingElement';
+            if (el === document.documentElement) return 'document.documentElement';
+            if (el === document.body) return 'document.body';
 
-            const style = window.getComputedStyle(el);
-            const overflowY = style.overflowY;
+            const tag = el.tagName ? el.tagName.toLowerCase() : 'unknown';
+            const id = el.id ? '#' + el.id : '';
+            const cls = el.className && typeof el.className === 'string'
+              ? '.' + el.className.trim().replace(/\\s+/g, '.')
+              : '';
 
-            const canScroll =
-              (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') &&
-              el.scrollHeight > el.clientHeight + 5;
-
-            return canScroll;
+            return tag + id + cls;
           }
 
-          function getScrollableCandidates() {
-            const candidates = [
-              document.scrollingElement,
-              document.documentElement,
-              document.body
-            ].filter(Boolean);
+          function getPotentialScrollTargets() {
+            const targets = new Set();
 
-            const all = Array.from(document.querySelectorAll('*'));
+            if (document.scrollingElement) targets.add(document.scrollingElement);
+            if (document.documentElement) targets.add(document.documentElement);
+            if (document.body) targets.add(document.body);
 
-            for (const el of all) {
-              if (isScrollable(el)) {
-                candidates.push(el);
-              }
+            const centre = document.elementFromPoint(
+              Math.floor(window.innerWidth / 2),
+              Math.floor(window.innerHeight / 2)
+            );
+
+            let current = centre;
+
+            while (current) {
+              targets.add(current);
+              current = current.parentElement;
             }
 
-            return candidates;
-          }
+            for (const el of Array.from(document.querySelectorAll('*'))) {
+              try {
+                const style = window.getComputedStyle(el);
+                const overflowY = style.overflowY;
+                const overflow = style.overflow;
 
-          function getBestScrollableElement() {
-            const candidates = getScrollableCandidates();
+                const scrollLike =
+                  overflowY === 'auto' ||
+                  overflowY === 'scroll' ||
+                  overflowY === 'overlay' ||
+                  overflow === 'auto' ||
+                  overflow === 'scroll' ||
+                  overflow === 'overlay';
 
-            let best = null;
-            let bestScrollableDistance = 0;
+                const hasActualScroll = el.scrollHeight > el.clientHeight + 5;
 
-            for (const el of candidates) {
-              const scrollableDistance = Math.max(0, el.scrollHeight - el.clientHeight);
-
-              if (scrollableDistance > bestScrollableDistance) {
-                best = el;
-                bestScrollableDistance = scrollableDistance;
-              }
+                if (scrollLike || hasActualScroll) {
+                  targets.add(el);
+                }
+              } catch (_) {}
             }
 
-            return best || document.scrollingElement || document.documentElement || document.body;
+            return Array.from(targets).filter(Boolean);
           }
 
-          function applyScroll() {
-            const target = getBestScrollableElement();
+          function scoreTarget(el) {
+            const maxOffset = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
 
-            if (!target) {
+            let score = maxOffset;
+
+            const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+
+            if (rect) {
+              const visibleArea = Math.max(0, rect.width) * Math.max(0, rect.height);
+              score += Math.min(visibleArea / 1000, 500);
+            }
+
+            if (el === document.scrollingElement) score += 300;
+            if (el === document.documentElement) score += 200;
+            if (el === document.body) score += 100;
+
+            return score;
+          }
+
+          function getBestTarget() {
+            const targets = getPotentialScrollTargets()
+              .map((el) => ({
+                el,
+                maxOffset: Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)),
+                score: scoreTarget(el)
+              }))
+              .filter((x) => x.maxOffset > 5)
+              .sort((a, b) => b.score - a.score);
+
+            return targets.length ? targets[0] : null;
+          }
+
+          function applyAbsoluteScroll() {
+            const best = getBestTarget();
+
+            if (!best) {
               return {
                 applied: false,
+                target: 'none',
                 requestedOffset,
                 appliedOffset: 0,
                 maxOffset: 0,
-                target: 'none'
+                before: 0,
+                after: 0
               };
             }
 
-            const maxOffset = Math.max(0, target.scrollHeight - target.clientHeight);
-            const appliedOffset = Math.min(requestedOffset, maxOffset);
+            const safetyBuffer = 25;
+            const maxSafeOffset = Math.max(0, best.maxOffset - safetyBuffer);
+            const appliedOffset = Math.min(requestedOffset, maxSafeOffset);
 
-            target.scrollTop = appliedOffset;
+            const el = best.el;
+            const before = el.scrollTop || 0;
 
-            if (target === document.scrollingElement || target === document.documentElement || target === document.body) {
+            if (
+              el === document.scrollingElement ||
+              el === document.documentElement ||
+              el === document.body
+            ) {
               window.scrollTo(0, appliedOffset);
               document.documentElement.scrollTop = appliedOffset;
               document.body.scrollTop = appliedOffset;
+            } else {
+              el.scrollTop = appliedOffset;
             }
 
+            const after = el.scrollTop || 0;
+
             return {
-              applied: true,
+              applied: after !== before || appliedOffset === 0,
+              target: describe(el),
               requestedOffset,
               appliedOffset,
-              maxOffset,
-              target:
-                target === document.scrollingElement ? 'document.scrollingElement' :
-                target === document.documentElement ? 'document.documentElement' :
-                target === document.body ? 'document.body' :
-                target.tagName.toLowerCase() + (target.id ? '#' + target.id : '') + (target.className ? '.' + String(target.className).replace(/\\s+/g, '.') : '')
+              maxOffset: best.maxOffset,
+              before,
+              after
             };
           }
 
-          const first = applyScroll();
+          const first = applyAbsoluteScroll();
 
-          setTimeout(applyScroll, 250);
-          setTimeout(applyScroll, 750);
-          setTimeout(applyScroll, 1500);
-          setTimeout(applyScroll, 3000);
+          setTimeout(applyAbsoluteScroll, 250);
+          setTimeout(applyAbsoluteScroll, 750);
+          setTimeout(applyAbsoluteScroll, 1500);
+          setTimeout(applyAbsoluteScroll, 3000);
 
           return first;
         })();
@@ -737,8 +914,34 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
 
       writeLog(
         logPrefix,
-        `Applied scroll offset. requested=${result.requestedOffset}px applied=${result.appliedOffset}px max=${result.maxOffset}px target=${result.target}`
+        `Scroll offset result: requested=${result.requestedOffset}px applied=${result.appliedOffset}px max=${result.maxOffset}px target=${result.target} before=${result.before} after=${result.after}`
       );
+
+      if (
+        result &&
+        result.appliedOffset > 0 &&
+        Number(result.after || 0) === Number(result.before || 0)
+      ) {
+        try {
+          const owner = wc.getOwnerBrowserWindow();
+          const bounds = owner.getBounds();
+
+          const fallbackDelta = Math.min(requestedOffsetPx, 300);
+
+          wc.sendInputEvent({
+            type: 'mouseWheel',
+            x: Math.floor(bounds.width / 2),
+            y: Math.floor(bounds.height / 2),
+            deltaY: fallbackDelta,
+            deltaX: 0,
+            canScroll: true
+          });
+
+          writeLog(logPrefix, `Sent limited native wheel fallback: ${fallbackDelta}px`);
+        } catch (wheelErr) {
+          writeLog(logPrefix, `Native wheel fallback failed: ${wheelErr.message}`);
+        }
+      }
     } catch (scrollErr) {
       writeLog(logPrefix, `Failed to apply scroll offset: ${scrollErr.message}`);
     }
@@ -746,16 +949,18 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
 
   return {
     zoomFactor,
-    scrollOffsetPx
+    scrollOffsetPx: requestedOffsetPx,
+    sampledBackgroundColor
   };
 }
 
-
 async function loadDashboardIntoWindow(screenId) {
   const state = runtimeState.get(screenId);
+
   if (!state) return;
 
   const win = displayWindows.get(screenId);
+
   if (!win || win.isDestroyed()) return;
 
   rebuildPlaylistIfNeeded(screenId);
@@ -791,7 +996,7 @@ async function loadDashboardIntoWindow(screenId) {
 
       writeLog(
         screenId,
-        `Loaded OK: ${current.name} | zoom=${viewState.zoomFactor} | scrollOffset=${viewState.scrollOffsetPx}px | visibleFor=${durationMs + settleMs}ms`
+        `Loaded OK: ${current.name} | zoom=${viewState.zoomFactor} | scrollOffset=${viewState.scrollOffsetPx}px | bg=${viewState.sampledBackgroundColor || 'none'} | visibleFor=${durationMs + settleMs}ms`
       );
 
       scheduleNext(screenId, durationMs + settleMs);
@@ -851,6 +1056,7 @@ async function loadDashboardIntoWindow(screenId) {
 
 function advancePlaylist(screenId) {
   const state = runtimeState.get(screenId);
+
   if (!state) return;
 
   rebuildPlaylistIfNeeded(screenId);
@@ -1030,6 +1236,7 @@ function closeIdentifyWindows() {
       win.close();
     }
   }
+
   identifyWindows = [];
 }
 
@@ -1172,6 +1379,7 @@ function debouncedDisplayReconfigure(reason) {
 
 function registerRecoveryHooks() {
   if (recoveryHooksRegistered) return;
+
   recoveryHooksRegistered = true;
 
   screen.on('display-added', () => debouncedDisplayReconfigure('display-added'));
@@ -1184,8 +1392,6 @@ function registerRecoveryHooks() {
     startConfiguredScreens();
   });
 }
-
-/* IPC */
 
 ipcMain.handle('get-config', async () => configCache);
 
@@ -1200,6 +1406,7 @@ ipcMain.handle('save-config', async (_, config) => {
     applyKioskModeToAllWindows();
     refreshTrayMenu();
     notifyAdminState();
+
     return { ok: true };
   } catch (err) {
     writeLog('config', `Save failed: ${err.message}`);
@@ -1221,6 +1428,7 @@ ipcMain.handle('toggle-rotation', async () => {
 
   notifyAdminState();
   refreshTrayMenu();
+
   return { ok: true, rotationPaused };
 });
 
@@ -1232,6 +1440,7 @@ ipcMain.handle('identify-displays', async () => {
 ipcMain.handle('open-log-folder', async () => {
   ensureDir(LOG_DIR);
   await shell.openPath(LOG_DIR);
+
   return { ok: true };
 });
 
@@ -1249,8 +1458,6 @@ ipcMain.handle('preview-dashboard', async (_, dashboard) => {
     return { ok: false, error: err.message };
   }
 });
-
-/* Electron startup */
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 app.commandLine.appendSwitch('disable-features', 'Translate,BackForwardCache');
