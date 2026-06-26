@@ -28,6 +28,13 @@
         <button id="btnIdentify" class="full" type="button">Identify Displays</button>
         <button id="btnReload" class="full" type="button">Reload Screens</button>
         <button id="btnPauseResume" class="full" type="button">Pause Rotation</button>
+
+        <div class="sidebar-divider"></div>
+
+        <button id="btnCreateBackup" class="full" type="button">Backup Config</button>
+        <button id="btnExportConfig" class="full" type="button">Export Config</button>
+        <button id="btnImportConfig" class="full" type="button">Import Config</button>
+        <button id="btnOpenConfigFolder" class="full" type="button">Open Config Folder</button>
         <button id="btnOpenLogs" class="full" type="button">Open Logs</button>
       </div>
     </aside>
@@ -47,7 +54,6 @@
 
       <section id="errorBanner" class="error-banner hidden"></section>
 
-      <!-- OVERVIEW -->
       <section class="view active" id="view-overview">
         <div class="cards-grid compact-cards">
           <div class="overview-card">
@@ -83,7 +89,6 @@
         </div>
       </section>
 
-      <!-- SCREENS -->
       <section class="view" id="view-screens">
         <div class="split-layout">
           <div class="panel">
@@ -120,7 +125,7 @@
                 <span>Enabled</span>
               </label>
 
-              <div class="form-actions">
+              <div class="form-actions sticky-actions">
                 <button type="submit" class="primary">Save Screen</button>
                 <button type="button" id="btnResetScreen">Clear</button>
               </div>
@@ -129,7 +134,6 @@
         </div>
       </section>
 
-      <!-- DASHBOARDS -->
       <section class="view" id="view-dashboards">
         <div class="split-layout wide-right">
           <div class="panel">
@@ -220,7 +224,7 @@
                 <span>Enabled</span>
               </label>
 
-              <div class="form-actions">
+              <div class="form-actions sticky-actions">
                 <button type="submit" class="primary">Save Dashboard</button>
                 <button type="button" id="btnPreviewDashboard">Preview Offset</button>
                 <button type="button" id="btnResetDashboard">Clear</button>
@@ -230,7 +234,6 @@
         </div>
       </section>
 
-      <!-- SETTINGS -->
       <section class="view" id="view-settings">
         <div class="panel settings-panel">
           <div class="panel-header">
@@ -280,7 +283,6 @@
         </div>
       </section>
 
-      <!-- RUNTIME -->
       <section class="view" id="view-runtime">
         <div class="panel">
           <div class="panel-header">
@@ -291,6 +293,8 @@
       </section>
     </main>
   </div>
+
+  <div id="toastContainer" class="toast-container"></div>
 
   <script src="admin.js"></script>
 </body>

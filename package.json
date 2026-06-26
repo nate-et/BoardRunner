@@ -1,6 +1,6 @@
 {
   "name": "wallboard-launcher",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "description": "BoardRunner - wallboard display management application for rotating live dashboards across multiple screens",
   "main": "main.js",
   "private": true,

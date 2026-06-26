@@ -20,6 +20,7 @@ app.setName(APP_NAME);
 const USER_DATA = app.getPath('userData');
 const BUNDLED_CONFIG_PATH = path.join(__dirname, 'config.json');
 const USER_CONFIG_PATH = path.join(USER_DATA, 'config.json');
+const BACKUP_DIR = path.join(USER_DATA, 'backups');
 const LOG_DIR = path.join(USER_DATA, 'logs');
 const TRAY_ICON_PATH = path.join(__dirname, 'assets', 'tray.png');
 
@@ -216,9 +217,77 @@ function writeUserConfig(config) {
   fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
 }
 
+
+function getTimestampForFileName() {
+  return new Date()
+    .toISOString()
+    .replace(/[:.]/g, '-')
+    .replace('T', '_')
+    .slice(0, 19);
+}
+
+function createConfigBackup(reason = 'manual') {
+  ensureDir(BACKUP_DIR);
+
+  let sourceConfig = configCache;
+
+  if (!sourceConfig && fs.existsSync(USER_CONFIG_PATH)) {
+    sourceConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, 'utf8'));
+  }
+
+  if (!sourceConfig) {
+    sourceConfig = defaultConfig();
+  }
+
+  const timestamp = getTimestampForFileName();
+  const fileName = `BoardRunner-config-${reason}-${timestamp}.json`;
+  const backupPath = path.join(BACKUP_DIR, fileName);
+
+  fs.writeFileSync(backupPath, JSON.stringify(sourceConfig, null, 2), 'utf8');
+
+  writeLog('backup', `Config backup created: ${backupPath}`);
+  pruneOldConfigBackups();
+
+  return backupPath;
+}
+
+function pruneOldConfigBackups(maxBackups = 25) {
+  try {
+    ensureDir(BACKUP_DIR);
+
+    const files = fs.readdirSync(BACKUP_DIR)
+      .filter((file) => file.toLowerCase().endsWith('.json'))
+      .map((file) => {
+        const fullPath = path.join(BACKUP_DIR, file);
+        const stat = fs.statSync(fullPath);
+        return {
+          file,
+          fullPath,
+          mtime: stat.mtimeMs
+        };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+
+    const oldFiles = files.slice(maxBackups);
+
+    for (const oldFile of oldFiles) {
+      fs.unlinkSync(oldFile.fullPath);
+      writeLog('backup', `Old config backup pruned: ${oldFile.fullPath}`);
+    }
+
+  } catch (err) {
+    writeLog('backup', `Failed to prune old config backups: ${err.message}`);
+  }
+}
+
+
 function saveConfig(config) {
   const merged = mergeConfigWithDefaults(config);
   validateConfig(merged);
+
+  if (fs.existsSync(USER_CONFIG_PATH) || configCache) {
+    createConfigBackup('pre-save');
+  }
 
   writeUserConfig(merged);
 
@@ -227,6 +296,7 @@ function saveConfig(config) {
   setupWatchdog();
   writeLog('config', `Config saved to ${USER_CONFIG_PATH}`);
 }
+
 
 function persistCurrentConfig() {
   if (!configCache) return;
@@ -1568,6 +1638,93 @@ ipcMain.handle('get-config', async () => configCache);
 ipcMain.handle('get-state', async () => getAdminState());
 
 ipcMain.handle('get-detected-displays', async () => getDetectedDisplays());
+
+ipcMain.handle('open-config-folder', async () => {
+  ensureDir(USER_DATA);
+  await shell.openPath(USER_DATA);
+  return { ok: true, path: USER_DATA };
+});
+
+ipcMain.handle('create-config-backup', async () => {
+  try {
+    const backupPath = createConfigBackup('manual');
+    return { ok: true, path: backupPath };
+  } catch (err) {
+    writeLog('backup', `Manual backup failed: ${err.message}`);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('export-config', async () => {
+  try {
+    ensureDir(USER_DATA);
+
+    const result = await dialog.showSaveDialog(adminWindow || undefined, {
+      title: 'Export BoardRunner Config',
+      defaultPath: `BoardRunner-config-export-${getTimestampForFileName()}.json`,
+      filters: [
+        { name: 'JSON Config', extensions: ['json'] }
+      ]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { ok: false, cancelled: true };
+    }
+
+    const exportConfig = configCache || readConfigFile();
+    fs.writeFileSync(result.filePath, JSON.stringify(exportConfig, null, 2), 'utf8');
+
+    writeLog('config', `Config exported to ${result.filePath}`);
+    return { ok: true, path: result.filePath };
+  } catch (err) {
+    writeLog('config', `Export failed: ${err.message}`);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('import-config', async () => {
+  try {
+    const result = await dialog.showOpenDialog(adminWindow || undefined, {
+      title: 'Import BoardRunner Config',
+      properties: ['openFile'],
+      filters: [
+        { name: 'JSON Config', extensions: ['json'] }
+      ]
+    });
+
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+      return { ok: false, cancelled: true };
+    }
+
+    const importPath = result.filePaths[0];
+    const raw = fs.readFileSync(importPath, 'utf8');
+    const importedConfig = mergeConfigWithDefaults(JSON.parse(raw));
+
+    validateConfig(importedConfig);
+
+    createConfigBackup('pre-import');
+    writeUserConfig(importedConfig);
+
+    configCache = importedConfig;
+    applyStartupSetting();
+    setupWatchdog();
+    startConfiguredScreens();
+    applyKioskModeToAllWindows();
+    refreshTrayMenu();
+    notifyAdminState();
+
+    writeLog('config', `Config imported from ${importPath}`);
+
+    return {
+      ok: true,
+      path: importPath,
+      config: configCache
+    };
+  } catch (err) {
+    writeLog('config', `Import failed: ${err.message}`);
+    return { ok: false, error: err.message };
+  }
+});
 
 ipcMain.handle('save-config', async (_, config) => {
   try {

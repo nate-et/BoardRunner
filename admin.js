@@ -1,8 +1,12 @@
 let appState = null;
 let configModel = null;
 let eventsBound = false;
+let selectedScreenId = null;
+let selectedDashboardId = null;
+let draggedDashboardId = null;
 
 const els = {
+  toastContainer: document.getElementById('toastContainer'),
   errorBanner: document.getElementById('errorBanner'),
 
   pageTitle: document.getElementById('pageTitle'),
@@ -20,6 +24,11 @@ const els = {
   btnReload: document.getElementById('btnReload'),
   btnPauseResume: document.getElementById('btnPauseResume'),
   btnOpenLogs: document.getElementById('btnOpenLogs'),
+
+  btnCreateBackup: document.getElementById('btnCreateBackup'),
+  btnExportConfig: document.getElementById('btnExportConfig'),
+  btnImportConfig: document.getElementById('btnImportConfig'),
+  btnOpenConfigFolder: document.getElementById('btnOpenConfigFolder'),
 
   ovConfiguredScreens: document.getElementById('ovConfiguredScreens'),
   ovConfiguredDashboards: document.getElementById('ovConfiguredDashboards'),
@@ -95,15 +104,47 @@ const viewMeta = {
 
 function showError(message) {
   console.error(message);
+
   if (!els.errorBanner) return;
+
   els.errorBanner.textContent = message;
   els.errorBanner.classList.remove('hidden');
 }
 
 function clearError() {
   if (!els.errorBanner) return;
+
   els.errorBanner.textContent = '';
   els.errorBanner.classList.add('hidden');
+}
+
+function showToast(message, type = 'info', timeoutMs = 3500) {
+  if (!els.toastContainer) return;
+
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = message;
+
+  els.toastContainer.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(10px)';
+
+    setTimeout(() => {
+      toast.remove();
+    }, 180);
+  }, timeoutMs);
+}
+
+function showSuccess(message) {
+  clearError();
+  showToast(message, 'success');
+}
+
+function showFailure(message) {
+  showError(message);
+  showToast(message, 'error', 5000);
 }
 
 function deepClone(obj) {
@@ -114,6 +155,7 @@ function uid(prefix) {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
     return `${prefix}-${window.crypto.randomUUID()}`;
   }
+
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
 }
 
@@ -158,12 +200,12 @@ function getRuntimeScreens() {
 }
 
 function getScreenName(screenIdValue) {
-  const match = configModel.screens.find((s) => s.id === screenIdValue);
+  const match = configModel.screens.find((screenItem) => screenItem.id === screenIdValue);
   return match ? match.name : '(unassigned)';
 }
 
 function screenExists(screenIdValue) {
-  return configModel.screens.some((s) => s.id === screenIdValue);
+  return configModel.screens.some((screenItem) => screenItem.id === screenIdValue);
 }
 
 function formatSecondsFromMs(ms) {
@@ -175,8 +217,8 @@ function formatPercentFromZoom(zoomFactor) {
 }
 
 function setView(viewName) {
-  els.navButtons.forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.view === viewName);
+  els.navButtons.forEach((button) => {
+    button.classList.toggle('active', button.dataset.view === viewName);
   });
 
   els.views.forEach((view) => {
@@ -194,6 +236,7 @@ function setView(viewName) {
 
 function scrollFormIntoView(formElement) {
   if (!formElement) return;
+
   formElement.scrollIntoView({
     behavior: 'smooth',
     block: 'start',
@@ -203,6 +246,7 @@ function scrollFormIntoView(formElement) {
 
 function flashForm(panelElement) {
   if (!panelElement) return;
+
   panelElement.classList.remove('form-flash');
   void panelElement.offsetWidth;
   panelElement.classList.add('form-flash');
@@ -272,11 +316,11 @@ function renderOverview() {
         </div>
       `;
     } else {
-      els.overviewDisplays.innerHTML = displays.map((d) => `
+      els.overviewDisplays.innerHTML = displays.map((displayItem) => `
         <div class="display-card">
-          <h4>${escapeHtml(d.label)}${d.primary ? ' (Primary)' : ''}</h4>
-          <p>${escapeHtml(d.size)}</p>
-          <p class="muted">X ${d.bounds.x}, Y ${d.bounds.y}, W ${d.bounds.width}, H ${d.bounds.height}</p>
+          <h4>${escapeHtml(displayItem.label)}${displayItem.primary ? ' (Primary)' : ''}</h4>
+          <p>${escapeHtml(displayItem.size)}</p>
+          <p class="muted">X ${displayItem.bounds.x}, Y ${displayItem.bounds.y}, W ${displayItem.bounds.width}, H ${displayItem.bounds.height}</p>
         </div>
       `).join('');
     }
@@ -287,18 +331,25 @@ function repopulateSelectors() {
   const displays = getDetectedDisplays();
 
   if (els.screenDisplayIndex) {
-    els.screenDisplayIndex.innerHTML = displays.map((d) => {
-      return `<option value="${d.index}">${escapeHtml(d.label)}${d.primary ? ' (Primary)' : ''} — ${escapeHtml(d.size)}</option>`;
+    const existingDisplayValue = els.screenDisplayIndex.value;
+
+    els.screenDisplayIndex.innerHTML = displays.map((displayItem) => {
+      return `<option value="${displayItem.index}">${escapeHtml(displayItem.label)}${displayItem.primary ? ' (Primary)' : ''} — ${escapeHtml(displayItem.size)}</option>`;
     }).join('');
+
+    if (existingDisplayValue !== '') {
+      els.screenDisplayIndex.value = existingDisplayValue;
+    }
   }
 
-  const screenOptions = configModel.screens.map((s) => {
-    return `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`;
+  const screenOptions = configModel.screens.map((screenItem) => {
+    return `<option value="${escapeHtml(screenItem.id)}">${escapeHtml(screenItem.name)}</option>`;
   }).join('');
 
   if (els.dashboardScreenId) {
     const existingValue = els.dashboardScreenId.value;
     els.dashboardScreenId.innerHTML = screenOptions;
+
     if (existingValue && screenExists(existingValue)) {
       els.dashboardScreenId.value = existingValue;
     }
@@ -307,6 +358,7 @@ function repopulateSelectors() {
   if (els.dashboardFilterScreen) {
     const currentValue = els.dashboardFilterScreen.value;
     els.dashboardFilterScreen.innerHTML = `<option value="">All screens</option>${screenOptions}`;
+
     if (currentValue && screenExists(currentValue)) {
       els.dashboardFilterScreen.value = currentValue;
     }
@@ -328,17 +380,17 @@ function renderScreens() {
 
   const sorted = deepClone(configModel.screens).sort((a, b) => a.name.localeCompare(b.name));
 
-  els.screensList.innerHTML = sorted.map((scr) => `
-    <div class="list-card">
-      <h4>${escapeHtml(scr.name)}</h4>
+  els.screensList.innerHTML = sorted.map((screenItem) => `
+    <div class="list-card ${screenItem.id === selectedScreenId ? 'selected' : ''}">
+      <h4>${escapeHtml(screenItem.name)}</h4>
       <div class="meta-row">
-        <span class="badge">Display ${Number(scr.displayIndex) + 1}</span>
-        <span class="badge ${scr.enabled !== false ? 'enabled' : 'disabled'}">${scr.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+        <span class="badge">Display ${Number(screenItem.displayIndex) + 1}</span>
+        <span class="badge ${screenItem.enabled !== false ? 'enabled' : 'disabled'}">${screenItem.enabled !== false ? 'Enabled' : 'Disabled'}</span>
       </div>
-      <p class="muted">ID: ${escapeHtml(scr.id)}</p>
+      <p class="muted">ID: ${escapeHtml(screenItem.id)}</p>
       <div class="item-actions">
-        <button type="button" data-screen-edit="${escapeHtml(scr.id)}">Edit</button>
-        <button type="button" data-screen-delete="${escapeHtml(scr.id)}">Delete</button>
+        <button type="button" data-screen-edit="${escapeHtml(screenItem.id)}">Edit</button>
+        <button type="button" data-screen-delete="${escapeHtml(screenItem.id)}">Delete</button>
       </div>
     </div>
   `).join('');
@@ -348,16 +400,18 @@ function getFilteredDashboards() {
   const filterScreenId = els.dashboardFilterScreen ? els.dashboardFilterScreen.value : '';
   let dashboards = deepClone(configModel.dashboards);
 
-  dashboards = dashboards.filter((d) => screenExists(d.screenId));
+  dashboards = dashboards.filter((dashboardItem) => screenExists(dashboardItem.screenId));
 
   if (filterScreenId) {
-    dashboards = dashboards.filter((d) => d.screenId === filterScreenId);
+    dashboards = dashboards.filter((dashboardItem) => dashboardItem.screenId === filterScreenId);
   }
 
   dashboards.sort((a, b) => {
     const aScreen = getScreenName(a.screenId);
     const bScreen = getScreenName(b.screenId);
+
     if (aScreen !== bScreen) return aScreen.localeCompare(bScreen);
+
     return Number(a.sequence || 0) - Number(b.sequence || 0);
   });
 
@@ -379,27 +433,33 @@ function renderDashboards() {
     return;
   }
 
-  els.dashboardsList.innerHTML = list.map((db) => `
-    <div class="list-card">
-      <h4>${escapeHtml(db.name)}</h4>
-      <div class="meta-row">
-        <span class="badge">${escapeHtml(getScreenName(db.screenId))}</span>
-        <span class="badge">Seq ${Number(db.sequence)}</span>
-        <span class="badge">${formatSecondsFromMs(db.durationMs)}</span>
-        <span class="badge">${formatPercentFromZoom(db.zoomFactor)}</span>
-        <span class="badge">Offset ${Number(db.scrollOffsetPx || 0)}px</span>
-        <span class="badge ${db.enabled !== false ? 'enabled' : 'disabled'}">${db.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+  els.dashboardsList.innerHTML = `
+    <p class="drag-hint">Tip: drag dashboards up or down to reorder them. Reordering only applies within the same screen.</p>
+    ${list.map((dashboardItem) => `
+      <div class="list-card ${dashboardItem.id === selectedDashboardId ? 'selected' : ''}"
+           draggable="true"
+           data-dashboard-card="${escapeHtml(dashboardItem.id)}"
+           data-dashboard-screen="${escapeHtml(dashboardItem.screenId)}">
+        <h4>${escapeHtml(dashboardItem.name)}</h4>
+        <div class="meta-row">
+          <span class="badge">${escapeHtml(getScreenName(dashboardItem.screenId))}</span>
+          <span class="badge">Seq ${Number(dashboardItem.sequence)}</span>
+          <span class="badge">${formatSecondsFromMs(dashboardItem.durationMs)}</span>
+          <span class="badge">${formatPercentFromZoom(dashboardItem.zoomFactor)}</span>
+          <span class="badge">Offset ${Number(dashboardItem.scrollOffsetPx || 0)}px</span>
+          <span class="badge ${dashboardItem.enabled !== false ? 'enabled' : 'disabled'}">${dashboardItem.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+        </div>
+        <p class="url-line">${escapeHtml(dashboardItem.url)}</p>
+        <div class="item-actions">
+          <button type="button" data-dashboard-edit="${escapeHtml(dashboardItem.id)}">Edit</button>
+          <button type="button" data-dashboard-preview="${escapeHtml(dashboardItem.id)}">Preview</button>
+          <button type="button" data-dashboard-delete="${escapeHtml(dashboardItem.id)}">Delete</button>
+          <button type="button" data-dashboard-up="${escapeHtml(dashboardItem.id)}">↑</button>
+          <button type="button" data-dashboard-down="${escapeHtml(dashboardItem.id)}">↓</button>
+        </div>
       </div>
-      <p class="url-line">${escapeHtml(db.url)}</p>
-      <div class="item-actions">
-        <button type="button" data-dashboard-edit="${escapeHtml(db.id)}">Edit</button>
-        <button type="button" data-dashboard-preview="${escapeHtml(db.id)}">Preview</button>
-        <button type="button" data-dashboard-delete="${escapeHtml(db.id)}">Delete</button>
-        <button type="button" data-dashboard-up="${escapeHtml(db.id)}">↑</button>
-        <button type="button" data-dashboard-down="${escapeHtml(db.id)}">↓</button>
-      </div>
-    </div>
-  `).join('');
+    `).join('')}
+  `;
 }
 
 function renderSettings() {
@@ -483,23 +543,27 @@ function resetScreenForm() {
   if (els.screenEnabled) els.screenEnabled.checked = true;
 
   const displays = getDetectedDisplays();
+
   if (els.screenDisplayIndex && displays.length > 0) {
     els.screenDisplayIndex.value = String(displays[0].index);
   }
 }
 
 function populateScreenForm(id) {
-  const screen = configModel.screens.find((s) => s.id === id);
-  if (!screen) return;
+  const screenItem = configModel.screens.find((screen) => screen.id === id);
 
+  if (!screenItem) return;
+
+  selectedScreenId = id;
+  renderScreens();
   setView('screens');
 
   if (els.screenFormTitle) els.screenFormTitle.textContent = 'Edit Screen';
-  if (els.screenFormSubtitle) els.screenFormSubtitle.textContent = `Editing: ${screen.name}`;
-  if (els.screenId) els.screenId.value = screen.id;
-  if (els.screenName) els.screenName.value = screen.name;
-  if (els.screenDisplayIndex) els.screenDisplayIndex.value = String(screen.displayIndex ?? 0);
-  if (els.screenEnabled) els.screenEnabled.checked = screen.enabled !== false;
+  if (els.screenFormSubtitle) els.screenFormSubtitle.textContent = `Editing: ${screenItem.name}`;
+  if (els.screenId) els.screenId.value = screenItem.id;
+  if (els.screenName) els.screenName.value = screenItem.name;
+  if (els.screenDisplayIndex) els.screenDisplayIndex.value = String(screenItem.displayIndex ?? 0);
+  if (els.screenEnabled) els.screenEnabled.checked = screenItem.enabled !== false;
 
   if (els.screenForm) {
     scrollFormIntoView(els.screenForm);
@@ -534,24 +598,27 @@ function resetDashboardForm() {
 }
 
 function populateDashboardForm(id) {
-  const db = configModel.dashboards.find((d) => d.id === id);
-  if (!db) return;
+  const dashboardItem = configModel.dashboards.find((dashboard) => dashboard.id === id);
 
+  if (!dashboardItem) return;
+
+  selectedDashboardId = id;
+  renderDashboards();
   setView('dashboards');
 
   if (els.dashboardFormTitle) els.dashboardFormTitle.textContent = 'Edit Dashboard';
-  if (els.dashboardFormSubtitle) els.dashboardFormSubtitle.textContent = `Editing: ${db.name}`;
-  if (els.dashboardId) els.dashboardId.value = db.id;
-  if (els.dashboardName) els.dashboardName.value = db.name;
-  if (els.dashboardUrl) els.dashboardUrl.value = db.url;
-  if (els.dashboardScreenId) els.dashboardScreenId.value = db.screenId;
-  if (els.dashboardSequence) els.dashboardSequence.value = String(db.sequence);
-  if (els.dashboardDurationSec) els.dashboardDurationSec.value = String(Math.round(Number(db.durationMs) / 1000));
-  if (els.dashboardZoomPercent) els.dashboardZoomPercent.value = String(Math.round(Number(db.zoomFactor) * 100));
-  if (els.dashboardScrollOffsetPx) els.dashboardScrollOffsetPx.value = String(Number(db.scrollOffsetPx || 0));
-  if (els.dashboardSettleMs) els.dashboardSettleMs.value = String(db.settleMs);
-  if (els.dashboardTimeoutMs) els.dashboardTimeoutMs.value = String(db.timeoutMs);
-  if (els.dashboardEnabled) els.dashboardEnabled.checked = db.enabled !== false;
+  if (els.dashboardFormSubtitle) els.dashboardFormSubtitle.textContent = `Editing: ${dashboardItem.name}`;
+  if (els.dashboardId) els.dashboardId.value = dashboardItem.id;
+  if (els.dashboardName) els.dashboardName.value = dashboardItem.name;
+  if (els.dashboardUrl) els.dashboardUrl.value = dashboardItem.url;
+  if (els.dashboardScreenId) els.dashboardScreenId.value = dashboardItem.screenId;
+  if (els.dashboardSequence) els.dashboardSequence.value = String(dashboardItem.sequence);
+  if (els.dashboardDurationSec) els.dashboardDurationSec.value = String(Math.round(Number(dashboardItem.durationMs) / 1000));
+  if (els.dashboardZoomPercent) els.dashboardZoomPercent.value = String(Math.round(Number(dashboardItem.zoomFactor) * 100));
+  if (els.dashboardScrollOffsetPx) els.dashboardScrollOffsetPx.value = String(Number(dashboardItem.scrollOffsetPx || 0));
+  if (els.dashboardSettleMs) els.dashboardSettleMs.value = String(dashboardItem.settleMs);
+  if (els.dashboardTimeoutMs) els.dashboardTimeoutMs.value = String(dashboardItem.timeoutMs);
+  if (els.dashboardEnabled) els.dashboardEnabled.checked = dashboardItem.enabled !== false;
 
   if (els.dashboardForm) {
     scrollFormIntoView(els.dashboardForm);
@@ -568,7 +635,7 @@ function populateDashboardForm(id) {
 
 function renumberScreenDashboards(screenIdValue) {
   const items = configModel.dashboards
-    .filter((d) => d.screenId === screenIdValue)
+    .filter((dashboardItem) => dashboardItem.screenId === screenIdValue)
     .sort((a, b) => Number(a.sequence) - Number(b.sequence));
 
   items.forEach((item, index) => {
@@ -577,17 +644,20 @@ function renumberScreenDashboards(screenIdValue) {
 }
 
 function moveDashboard(id, direction) {
-  const current = configModel.dashboards.find((d) => d.id === id);
+  const current = configModel.dashboards.find((dashboardItem) => dashboardItem.id === id);
+
   if (!current) return;
 
   const list = configModel.dashboards
-    .filter((d) => d.screenId === current.screenId)
+    .filter((dashboardItem) => dashboardItem.screenId === current.screenId)
     .sort((a, b) => Number(a.sequence) - Number(b.sequence));
 
-  const currentIndex = list.findIndex((d) => d.id === id);
+  const currentIndex = list.findIndex((dashboardItem) => dashboardItem.id === id);
+
   if (currentIndex < 0) return;
 
   const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+
   if (targetIndex < 0 || targetIndex >= list.length) return;
 
   const currentSeq = list[currentIndex].sequence;
@@ -595,7 +665,71 @@ function moveDashboard(id, direction) {
   list[targetIndex].sequence = currentSeq;
 
   renumberScreenDashboards(current.screenId);
+  selectedDashboardId = id;
   renderDashboards();
+
+  showSuccess('Dashboard order updated. Click Save & Reload to persist.');
+}
+
+function getDashboardById(id) {
+  return configModel.dashboards.find((dashboardItem) => dashboardItem.id === id);
+}
+
+function reorderDashboardByDrop(draggedId, targetId, placeAfterTarget) {
+  if (!draggedId || !targetId || draggedId === targetId) return false;
+
+  const dragged = getDashboardById(draggedId);
+  const target = getDashboardById(targetId);
+
+  if (!dragged || !target) return false;
+
+  if (dragged.screenId !== target.screenId) {
+    showFailure('Dashboards can only be reordered within the same screen.');
+    return false;
+  }
+
+  const screenIdValue = dragged.screenId;
+
+  const ordered = configModel.dashboards
+    .filter((dashboardItem) => dashboardItem.screenId === screenIdValue)
+    .sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
+
+  const draggedIndex = ordered.findIndex((dashboardItem) => dashboardItem.id === draggedId);
+
+  if (draggedIndex < 0) return false;
+
+  const [draggedItem] = ordered.splice(draggedIndex, 1);
+
+  let insertIndex = ordered.findIndex((dashboardItem) => dashboardItem.id === targetId);
+
+  if (insertIndex < 0) return false;
+
+  if (placeAfterTarget) {
+    insertIndex += 1;
+  }
+
+  ordered.splice(insertIndex, 0, draggedItem);
+
+  ordered.forEach((item, index) => {
+    const real = configModel.dashboards.find((dashboardItem) => dashboardItem.id === item.id);
+
+    if (real) {
+      real.sequence = index + 1;
+    }
+  });
+
+  selectedDashboardId = draggedId;
+
+  renderAll();
+
+  if (els.dashboardFilterScreen && screenExists(screenIdValue)) {
+    els.dashboardFilterScreen.value = screenIdValue;
+  }
+
+  renderDashboards();
+
+  showSuccess('Dashboard order updated. Click Save & Reload to persist.');
+  return true;
 }
 
 async function previewDashboard(dashboard) {
@@ -603,32 +737,43 @@ async function previewDashboard(dashboard) {
     const result = await window.wallboardApi.previewDashboard(dashboard);
 
     if (!result.ok) {
-      showError(`Preview failed: ${result.error}`);
+      showFailure(`Preview failed: ${result.error}`);
       return;
     }
 
-    clearError();
+    showSuccess('Preview opened.');
   } catch (err) {
-    showError(`Preview failed: ${err.message}`);
+    showFailure(`Preview failed: ${err.message}`);
   }
 }
 
 async function saveAll() {
   try {
     bindSettingsBackToModel();
+
     const result = await window.wallboardApi.saveConfig(configModel);
 
     if (!result.ok) {
-      showError(`Save failed: ${result.error}`);
+      showFailure(`Save failed: ${result.error}`);
       return;
     }
 
-    clearError();
     configModel = deepClone(await window.wallboardApi.getConfig());
     appState = await window.wallboardApi.getState();
+
     renderAll();
+
+    if (selectedDashboardId && configModel.dashboards.some((dashboardItem) => dashboardItem.id === selectedDashboardId)) {
+      populateDashboardForm(selectedDashboardId);
+    }
+
+    if (selectedScreenId && configModel.screens.some((screenItem) => screenItem.id === selectedScreenId)) {
+      populateScreenForm(selectedScreenId);
+    }
+
+    showSuccess('Configuration saved and screens reloaded.');
   } catch (err) {
-    showError(`Save failed: ${err.message}`);
+    showFailure(`Save failed: ${err.message}`);
   }
 }
 
@@ -645,7 +790,7 @@ function bindScreenFormEvents() {
       enabled: !!els.screenEnabled.checked
     };
 
-    const existingIndex = configModel.screens.findIndex((s) => s.id === model.id);
+    const existingIndex = configModel.screens.findIndex((screenItem) => screenItem.id === model.id);
 
     if (existingIndex >= 0) {
       configModel.screens[existingIndex] = model;
@@ -653,9 +798,11 @@ function bindScreenFormEvents() {
       configModel.screens.push(model);
     }
 
+    selectedScreenId = model.id;
+
     renderAll();
-    resetScreenForm();
-    clearError();
+    populateScreenForm(model.id);
+    showSuccess(`Screen saved: ${model.name}`);
   });
 }
 
@@ -666,7 +813,7 @@ function bindDashboardFormEvents() {
     e.preventDefault();
 
     const model = buildDashboardFromForm();
-    const existingIndex = configModel.dashboards.findIndex((d) => d.id === model.id);
+    const existingIndex = configModel.dashboards.findIndex((dashboardItem) => dashboardItem.id === model.id);
 
     if (existingIndex >= 0) {
       configModel.dashboards[existingIndex] = model;
@@ -675,6 +822,9 @@ function bindDashboardFormEvents() {
     }
 
     renumberScreenDashboards(model.screenId);
+
+    selectedDashboardId = model.id;
+
     renderAll();
 
     if (els.dashboardFilterScreen) {
@@ -682,8 +832,8 @@ function bindDashboardFormEvents() {
     }
 
     renderDashboards();
-    resetDashboardForm();
-    clearError();
+    populateDashboardForm(model.id);
+    showSuccess(`Dashboard saved: ${model.name}`);
   });
 }
 
@@ -691,6 +841,7 @@ function bindListDelegates() {
   if (els.screensList) {
     els.screensList.addEventListener('click', (e) => {
       const button = e.target.closest('button');
+
       if (!button) return;
 
       const editId = button.getAttribute('data-screen-edit');
@@ -702,18 +853,23 @@ function bindListDelegates() {
       }
 
       if (deleteId) {
-        const inUse = configModel.dashboards.some((d) => d.screenId === deleteId);
+        const inUse = configModel.dashboards.some((dashboardItem) => dashboardItem.screenId === deleteId);
 
         if (inUse) {
-          showError('Cannot delete this screen because dashboards are still assigned to it.');
+          showFailure('Cannot delete this screen because dashboards are still assigned to it.');
           return;
         }
 
         if (window.confirm('Delete this screen?')) {
-          configModel.screens = configModel.screens.filter((s) => s.id !== deleteId);
+          configModel.screens = configModel.screens.filter((screenItem) => screenItem.id !== deleteId);
+
+          if (selectedScreenId === deleteId) {
+            selectedScreenId = null;
+          }
+
           renderAll();
           resetScreenForm();
-          clearError();
+          showSuccess('Screen deleted.');
         }
       }
     });
@@ -722,6 +878,7 @@ function bindListDelegates() {
   if (els.dashboardsList) {
     els.dashboardsList.addEventListener('click', (e) => {
       const button = e.target.closest('button');
+
       if (!button) return;
 
       const editId = button.getAttribute('data-dashboard-edit');
@@ -736,27 +893,30 @@ function bindListDelegates() {
       }
 
       if (previewId) {
-        const db = configModel.dashboards.find((d) => d.id === previewId);
-        if (db) {
-          previewDashboard(db);
-        }
+        const dashboardItem = configModel.dashboards.find((dashboard) => dashboard.id === previewId);
+        if (dashboardItem) previewDashboard(dashboardItem);
         return;
       }
 
       if (deleteId) {
         if (window.confirm('Delete this dashboard?')) {
-          const existing = configModel.dashboards.find((d) => d.id === deleteId);
+          const existing = configModel.dashboards.find((dashboardItem) => dashboardItem.id === deleteId);
 
-          configModel.dashboards = configModel.dashboards.filter((d) => d.id !== deleteId);
+          configModel.dashboards = configModel.dashboards.filter((dashboardItem) => dashboardItem.id !== deleteId);
 
           if (existing) {
             renumberScreenDashboards(existing.screenId);
           }
 
+          if (selectedDashboardId === deleteId) {
+            selectedDashboardId = null;
+          }
+
           renderAll();
           resetDashboardForm();
-          clearError();
+          showSuccess('Dashboard deleted.');
         }
+
         return;
       }
 
@@ -772,27 +932,128 @@ function bindListDelegates() {
   }
 }
 
+function bindDashboardDragAndDrop() {
+  if (!els.dashboardsList) return;
+
+  els.dashboardsList.addEventListener('dragstart', (e) => {
+    const card = e.target.closest('[data-dashboard-card]');
+
+    if (!card) return;
+
+    if (e.target.closest('button, input, select, textarea, a')) {
+      e.preventDefault();
+      return;
+    }
+
+    draggedDashboardId = card.getAttribute('data-dashboard-card');
+    card.classList.add('dragging');
+
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', draggedDashboardId);
+    }
+  });
+
+  els.dashboardsList.addEventListener('dragover', (e) => {
+    const card = e.target.closest('[data-dashboard-card]');
+
+    if (!card || !draggedDashboardId) return;
+
+    const dragged = getDashboardById(draggedDashboardId);
+    const targetId = card.getAttribute('data-dashboard-card');
+    const target = getDashboardById(targetId);
+
+    if (!dragged || !target || dragged.screenId !== target.screenId) {
+      return;
+    }
+
+    e.preventDefault();
+
+    const cards = els.dashboardsList.querySelectorAll('[data-dashboard-card]');
+    cards.forEach((item) => item.classList.remove('drag-over'));
+
+    card.classList.add('drag-over');
+
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move';
+    }
+  });
+
+  els.dashboardsList.addEventListener('dragleave', (e) => {
+    const card = e.target.closest('[data-dashboard-card]');
+
+    if (!card) return;
+
+    card.classList.remove('drag-over');
+  });
+
+  els.dashboardsList.addEventListener('drop', (e) => {
+    const card = e.target.closest('[data-dashboard-card]');
+
+    if (!card || !draggedDashboardId) return;
+
+    e.preventDefault();
+
+    const targetId = card.getAttribute('data-dashboard-card');
+    const rect = card.getBoundingClientRect();
+    const midpoint = rect.top + rect.height / 2;
+    const placeAfterTarget = e.clientY > midpoint;
+
+    reorderDashboardByDrop(draggedDashboardId, targetId, placeAfterTarget);
+
+    draggedDashboardId = null;
+
+    const cards = els.dashboardsList.querySelectorAll('[data-dashboard-card]');
+    cards.forEach((item) => {
+      item.classList.remove('dragging');
+      item.classList.remove('drag-over');
+    });
+  });
+
+  els.dashboardsList.addEventListener('dragend', () => {
+    draggedDashboardId = null;
+
+    const cards = els.dashboardsList.querySelectorAll('[data-dashboard-card]');
+    cards.forEach((item) => {
+      item.classList.remove('dragging');
+      item.classList.remove('drag-over');
+    });
+  });
+}
+
 function bindTopLevelEvents() {
   if (els.btnResetScreen) {
-    els.btnResetScreen.addEventListener('click', resetScreenForm);
+    els.btnResetScreen.addEventListener('click', () => {
+      selectedScreenId = null;
+      resetScreenForm();
+      renderScreens();
+    });
   }
 
   if (els.btnResetDashboard) {
-    els.btnResetDashboard.addEventListener('click', resetDashboardForm);
+    els.btnResetDashboard.addEventListener('click', () => {
+      selectedDashboardId = null;
+      resetDashboardForm();
+      renderDashboards();
+    });
   }
 
   if (els.btnAddScreen) {
     els.btnAddScreen.addEventListener('click', () => {
+      selectedScreenId = null;
       setView('screens');
       resetScreenForm();
+      renderScreens();
       els.screenName?.focus();
     });
   }
 
   if (els.btnAddDashboard) {
     els.btnAddDashboard.addEventListener('click', () => {
+      selectedDashboardId = null;
       setView('dashboards');
       resetDashboardForm();
+      renderDashboards();
       els.dashboardName?.focus();
     });
   }
@@ -802,7 +1063,7 @@ function bindTopLevelEvents() {
       const dashboard = buildDashboardFromForm();
 
       if (!dashboard.url) {
-        showError('Preview requires a valid dashboard URL.');
+        showFailure('Preview requires a valid dashboard URL.');
         return;
       }
 
@@ -822,8 +1083,9 @@ function bindTopLevelEvents() {
     els.btnIdentify.addEventListener('click', async () => {
       try {
         await window.wallboardApi.identifyDisplays();
+        showSuccess('Identify displays triggered.');
       } catch (err) {
-        showError(`Identify Displays failed: ${err.message}`);
+        showFailure(`Identify Displays failed: ${err.message}`);
       }
     });
   }
@@ -832,8 +1094,9 @@ function bindTopLevelEvents() {
     els.btnReload.addEventListener('click', async () => {
       try {
         await window.wallboardApi.reloadScreens();
+        showSuccess('Screens reloaded.');
       } catch (err) {
-        showError(`Reload Screens failed: ${err.message}`);
+        showFailure(`Reload Screens failed: ${err.message}`);
       }
     });
   }
@@ -843,7 +1106,7 @@ function bindTopLevelEvents() {
       try {
         await window.wallboardApi.toggleRotation();
       } catch (err) {
-        showError(`Pause/Resume failed: ${err.message}`);
+        showFailure(`Pause/Resume failed: ${err.message}`);
       }
     });
   }
@@ -853,14 +1116,102 @@ function bindTopLevelEvents() {
       try {
         await window.wallboardApi.openLogFolder();
       } catch (err) {
-        showError(`Open Logs failed: ${err.message}`);
+        showFailure(`Open Logs failed: ${err.message}`);
       }
     });
   }
 
-  els.navButtons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      setView(btn.dataset.view);
+  if (els.btnCreateBackup) {
+    els.btnCreateBackup.addEventListener('click', async () => {
+      try {
+        const result = await window.wallboardApi.createConfigBackup();
+
+        if (!result.ok) {
+          showFailure(`Backup failed: ${result.error}`);
+          return;
+        }
+
+        showSuccess('Config backup created.');
+      } catch (err) {
+        showFailure(`Backup failed: ${err.message}`);
+      }
+    });
+  }
+
+  if (els.btnExportConfig) {
+    els.btnExportConfig.addEventListener('click', async () => {
+      try {
+        const result = await window.wallboardApi.exportConfig();
+
+        if (result.cancelled) return;
+
+        if (!result.ok) {
+          showFailure(`Export failed: ${result.error}`);
+          return;
+        }
+
+        showSuccess('Config exported successfully.');
+      } catch (err) {
+        showFailure(`Export failed: ${err.message}`);
+      }
+    });
+  }
+
+  if (els.btnImportConfig) {
+    els.btnImportConfig.addEventListener('click', async () => {
+      try {
+        const confirmImport = window.confirm(
+          'Importing a config will replace the current BoardRunner configuration. A backup will be created first. Continue?'
+        );
+
+        if (!confirmImport) return;
+
+        const result = await window.wallboardApi.importConfig();
+
+        if (result.cancelled) return;
+
+        if (!result.ok) {
+          showFailure(`Import failed: ${result.error}`);
+          return;
+        }
+
+        selectedScreenId = null;
+        selectedDashboardId = null;
+
+        configModel = deepClone(await window.wallboardApi.getConfig());
+        appState = await window.wallboardApi.getState();
+
+        renderAll();
+        resetScreenForm();
+        resetDashboardForm();
+
+        showSuccess('Config imported and screens reloaded.');
+      } catch (err) {
+        showFailure(`Import failed: ${err.message}`);
+      }
+    });
+  }
+
+  if (els.btnOpenConfigFolder) {
+    els.btnOpenConfigFolder.addEventListener('click', async () => {
+      try {
+        const result = await window.wallboardApi.openConfigFolder();
+
+        if (!result.ok) {
+          showFailure(`Open config folder failed: ${result.error}`);
+          return;
+        }
+
+        showSuccess('Config folder opened.');
+      } catch (err) {
+        showFailure(`Open config folder failed: ${err.message}`);
+      }
+    });
+  }
+
+  els.navButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      setView(button.dataset.view);
     });
   });
 }
@@ -878,11 +1229,13 @@ function bindAppStateSubscription() {
 
 function bindEvents() {
   if (eventsBound) return;
+
   eventsBound = true;
 
   bindScreenFormEvents();
   bindDashboardFormEvents();
   bindListDelegates();
+  bindDashboardDragAndDrop();
   bindTopLevelEvents();
   bindAppStateSubscription();
 }
@@ -909,7 +1262,7 @@ async function init() {
     resetDashboardForm();
     setView('overview');
   } catch (err) {
-    showError(`Admin UI initialisation failed: ${err.message}`);
+    showFailure(`Admin UI initialisation failed: ${err.message}`);
   }
 }
 

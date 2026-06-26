@@ -30,24 +30,11 @@ body {
   font-family: var(--font);
 }
 
-body {
-  overflow: hidden;
-}
+body { overflow: hidden; }
 
-h1,
-h2,
-h3,
-h4,
-p {
-  margin-top: 0;
-}
+h1, h2, h3, h4, p { margin-top: 0; }
 
-button,
-input,
-select,
-textarea {
-  font: inherit;
-}
+button, input, select, textarea { font: inherit; }
 
 .app-shell {
   display: grid;
@@ -124,6 +111,12 @@ textarea {
   gap: 10px;
 }
 
+.sidebar-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
 .main {
   display: flex;
   flex-direction: column;
@@ -181,9 +174,7 @@ textarea {
   font-size: 14px;
 }
 
-.hidden {
-  display: none !important;
-}
+.hidden { display: none !important; }
 
 .view {
   display: none;
@@ -311,13 +302,8 @@ textarea {
   font-size: 12px;
 }
 
-.badge.enabled {
-  color: var(--good);
-}
-
-.badge.disabled {
-  color: var(--danger);
-}
+.badge.enabled { color: var(--good); }
+.badge.disabled { color: var(--danger); }
 
 .split-layout {
   display: grid;
@@ -381,9 +367,19 @@ select {
 }
 
 input:focus,
-select:focus {
-  border-color: rgba(15,108,189,0.75);
-  box-shadow: 0 0 0 3px rgba(15,108,189,0.18);
+select:focus,
+textarea:focus {
+  border-color: #3aa0ff !important;
+  box-shadow: 0 0 0 3px rgba(58, 160, 255, 0.28) !important;
+  outline: none !important;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid rgba(58, 160, 255, 0.9);
+  outline-offset: 2px;
 }
 
 .form-grid.two-col {
@@ -410,6 +406,14 @@ select:focus {
   gap: 10px;
   margin-top: 8px;
   flex-wrap: wrap;
+}
+
+.sticky-actions {
+  position: sticky;
+  bottom: -16px;
+  background: linear-gradient(to top, var(--panel) 80%, rgba(23, 26, 29, 0));
+  padding-top: 12px;
+  padding-bottom: 2px;
 }
 
 .advanced-details {
@@ -485,9 +489,7 @@ button {
   cursor: pointer;
 }
 
-button:hover {
-  background: #2b3138;
-}
+button:hover { background: #2b3138; }
 
 button.primary {
   background: var(--accent);
@@ -495,13 +497,9 @@ button.primary {
   color: #fff;
 }
 
-button.primary:hover {
-  background: var(--accent-hover);
-}
+button.primary:hover { background: var(--accent-hover); }
 
-button.full {
-  width: 100%;
-}
+button.full { width: 100%; }
 
 .item-actions {
   display: flex;
@@ -510,9 +508,7 @@ button.full {
   margin-top: 10px;
 }
 
-.muted {
-  color: var(--muted);
-}
+.muted { color: var(--muted); }
 
 .url-line {
   color: #c8d7e5;
@@ -536,6 +532,58 @@ button.full {
   100% {
     box-shadow: var(--shadow);
     border-color: var(--border);
+  }
+}
+
+.list-card.selected {
+  border-color: rgba(58, 160, 255, 0.85);
+  box-shadow: 0 0 0 3px rgba(58, 160, 255, 0.16);
+}
+
+.toast-container {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.toast {
+  min-width: 260px;
+  max-width: 420px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #1c2024;
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  line-height: 1.4;
+  opacity: 0;
+  transform: translateY(10px);
+  animation: toastIn 180ms ease forwards;
+}
+
+.toast.success {
+  border-color: rgba(122, 217, 122, 0.45);
+}
+
+.toast.error {
+  border-color: rgba(255, 158, 158, 0.55);
+  background: #2a1515;
+}
+
+.toast.info {
+  border-color: rgba(58, 160, 255, 0.45);
+}
+
+@keyframes toastIn {
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -569,4 +617,27 @@ button.full {
   .compact-cards {
     grid-template-columns: 1fr;
   }
+}
+.list-card[draggable="true"] {
+  cursor: grab;
+}
+
+.list-card[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.list-card.dragging {
+  opacity: 0.45;
+  border-color: rgba(58, 160, 255, 0.75);
+}
+
+.list-card.drag-over {
+  border-color: rgba(58, 160, 255, 0.95);
+  box-shadow: 0 0 0 3px rgba(58, 160, 255, 0.18);
+}
+
+.drag-hint {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 13px;
 }
