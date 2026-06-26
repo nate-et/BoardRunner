@@ -625,6 +625,7 @@ function rebuildPlaylistIfNeeded(screenId) {
   }
 }
 
+
 async function applyDashboardView(wc, dashboard, logPrefix) {
   const zoomFactor = Number(dashboard.zoomFactor || 1);
   const scrollOffsetPx = Number(dashboard.scrollOffsetPx || 0);
@@ -633,25 +634,113 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
 
   if (scrollOffsetPx > 0) {
     try {
-      await wc.executeJavaScript(`
+      const result = await wc.executeJavaScript(`
         (() => {
-          const y = ${scrollOffsetPx};
-          const apply = () => {
-            try {
-              window.scrollTo(0, y);
-              document.documentElement.scrollTop = y;
-              document.body.scrollTop = y;
-            } catch (_) {}
-          };
-          apply();
-          setTimeout(apply, 250);
-          setTimeout(apply, 1000);
+          const requestedOffset = ${scrollOffsetPx};
+
+          function isScrollable(el) {
+            if (!el) return false;
+
+            const style = window.getComputedStyle(el);
+            const overflowY = style.overflowY;
+
+            const canScroll =
+              (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') &&
+              el.scrollHeight > el.clientHeight + 5;
+
+            return canScroll;
+          }
+
+          function getScrollableCandidates() {
+            const candidates = [
+              document.scrollingElement,
+              document.documentElement,
+              document.body
+            ].filter(Boolean);
+
+            const all = Array.from(document.querySelectorAll('*'));
+
+            for (const el of all) {
+              if (isScrollable(el)) {
+                candidates.push(el);
+              }
+            }
+
+            return candidates;
+          }
+
+          function getBestScrollableElement() {
+            const candidates = getScrollableCandidates();
+
+            let best = null;
+            let bestScrollableDistance = 0;
+
+            for (const el of candidates) {
+              const scrollableDistance = Math.max(0, el.scrollHeight - el.clientHeight);
+
+              if (scrollableDistance > bestScrollableDistance) {
+                best = el;
+                bestScrollableDistance = scrollableDistance;
+              }
+            }
+
+            return best || document.scrollingElement || document.documentElement || document.body;
+          }
+
+          function applyScroll() {
+            const target = getBestScrollableElement();
+
+            if (!target) {
+              return {
+                applied: false,
+                requestedOffset,
+                appliedOffset: 0,
+                maxOffset: 0,
+                target: 'none'
+              };
+            }
+
+            const maxOffset = Math.max(0, target.scrollHeight - target.clientHeight);
+            const appliedOffset = Math.min(requestedOffset, maxOffset);
+
+            target.scrollTop = appliedOffset;
+
+            if (target === document.scrollingElement || target === document.documentElement || target === document.body) {
+              window.scrollTo(0, appliedOffset);
+              document.documentElement.scrollTop = appliedOffset;
+              document.body.scrollTop = appliedOffset;
+            }
+
+            return {
+              applied: true,
+              requestedOffset,
+              appliedOffset,
+              maxOffset,
+              target:
+                target === document.scrollingElement ? 'document.scrollingElement' :
+                target === document.documentElement ? 'document.documentElement' :
+                target === document.body ? 'document.body' :
+                target.tagName.toLowerCase() + (target.id ? '#' + target.id : '') + (target.className ? '.' + String(target.className).replace(/\\s+/g, '.') : '')
+            };
+          }
+
+          const first = applyScroll();
+
+          setTimeout(applyScroll, 250);
+          setTimeout(applyScroll, 750);
+          setTimeout(applyScroll, 1500);
+          setTimeout(applyScroll, 3000);
+
+          return first;
         })();
       `, true);
 
-      writeLog(logPrefix, `Applied vertical offset: ${scrollOffsetPx}px`);
+      writeLog(
+        logPrefix,
+        `Applied scroll offset. requested=${result.requestedOffset}px applied=${result.appliedOffset}px max=${result.maxOffset}px target=${result.target}`
+      );
     } catch (scrollErr) {
-      writeLog(logPrefix, `Failed to apply vertical offset: ${scrollErr.message}`);
+      writeLog(logPrefix, `Failed to apply scroll offset: ${scrollErr.message}`);
     }
   }
 
@@ -660,6 +749,7 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
     scrollOffsetPx
   };
 }
+
 
 async function loadDashboardIntoWindow(screenId) {
   const state = runtimeState.get(screenId);
