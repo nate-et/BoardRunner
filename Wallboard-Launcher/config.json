@@ -1,0 +1,61 @@
+{
+  "settings": {
+    "kioskMode": true,
+    "trayOnlyStartup": true,
+    "hideAdminToTray": true,
+    "startWithWindows": false,
+    "identifyOverlaySeconds": 4
+  },
+  "screens": [
+    {
+      "id": "screen-1",
+      "name": "Left Screen",
+      "displayIndex": 0,
+      "enabled": true
+    },
+    {
+      "id": "screen-2",
+      "name": "Right Screen",
+      "displayIndex": 1,
+      "enabled": true
+    }
+  ],
+  "dashboards": [
+    {
+      "id": "db-1",
+      "name": "Test 1",
+      "url": "https://picsum.photos/1980/1020",
+      "screenId": "screen-1",
+      "sequence": 1,
+      "durationMs": 45000,
+      "zoomFactor": 0.9,
+      "settleMs": 3000,
+      "timeoutMs": 20000,
+      "enabled": true
+    },
+    {
+      "id": "db-2",
+      "name": "Test 2",
+      "url": "https://picsum.photos/1980/1020",
+      "screenId": "screen-1",
+      "sequence": 2,
+      "durationMs": 60000,
+      "zoomFactor": 0.85,
+      "settleMs": 3000,
+      "timeoutMs": 20000,
+      "enabled": true
+    },
+    {
+      "id": "db-3",
+      "name": "Test 3",
+      "url": "https://picsum.photos/1980/1020",
+      "screenId": "screen-2",
+      "sequence": 1,
+      "durationMs": 30000,
+      "zoomFactor": 1,
+      "settleMs": 3000,
+      "timeoutMs": 20000,
+      "enabled": true
+    }
+  ]
+}

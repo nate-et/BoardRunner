@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BoardRunner Admin</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>BoardRunner</h1>
+        <p>Admin Console</p>
+        <p class="brand-credit">Developed by Nathan Ersser</p>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-btn active" data-view="overview" type="button">Overview</button>
+        <button class="nav-btn" data-view="screens" type="button">Screens</button>
+        <button class="nav-btn" data-view="dashboards" type="button">Dashboards</button>
+        <button class="nav-btn" data-view="settings" type="button">Settings</button>
+        <button class="nav-btn" data-view="runtime" type="button">Runtime</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button id="btnSaveAll" class="primary full" type="button">Save & Reload</button>
+        <button id="btnIdentify" class="full" type="button">Identify Displays</button>
+        <button id="btnReload" class="full" type="button">Reload Screens</button>
+        <button id="btnPauseResume" class="full" type="button">Pause Rotation</button>
+        <button id="btnOpenLogs" class="full" type="button">Open Logs</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h2 id="pageTitle">Overview</h2>
+          <p id="pageSubtitle">Quick summary of screens, dashboards and current playback</p>
+        </div>
+        <div class="status-strip">
+          <span id="statusRotation" class="status-pill">Rotation: Running</span>
+          <span id="statusStartup" class="status-pill">Startup: Off</span>
+          <span id="statusKiosk" class="status-pill">Kiosk: On</span>
+        </div>
+      </header>
+
+      <section id="errorBanner" class="error-banner hidden"></section>
+
+      <!-- OVERVIEW -->
+      <section class="view active" id="view-overview">
+        <div class="cards-grid compact-cards">
+          <div class="overview-card">
+            <span class="overview-label">Configured Screens</span>
+            <strong id="ovConfiguredScreens">0</strong>
+          </div>
+          <div class="overview-card">
+            <span class="overview-label">Configured Dashboards</span>
+            <strong id="ovConfiguredDashboards">0</strong>
+          </div>
+          <div class="overview-card">
+            <span class="overview-label">Detected Displays</span>
+            <strong id="ovDetectedDisplays">0</strong>
+          </div>
+          <div class="overview-card">
+            <span class="overview-label">Live Runtime Screens</span>
+            <strong id="ovRuntimeScreens">0</strong>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Current Playback</h3>
+          </div>
+          <div id="overviewRuntimeCards" class="cards-grid"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Display Detection</h3>
+          </div>
+          <div id="overviewDisplays" class="list-grid"></div>
+        </div>
+      </section>
+
+      <!-- SCREENS -->
+      <section class="view" id="view-screens">
+        <div class="split-layout">
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Screens</h3>
+              <button id="btnAddScreen" type="button">Add Screen</button>
+            </div>
+            <div id="screensList" class="list-stack"></div>
+          </div>
+
+          <div class="panel" id="screenEditorPanel">
+            <div class="panel-header">
+              <div>
+                <h3 id="screenFormTitle">Add Screen</h3>
+                <p class="panel-subtitle" id="screenFormSubtitle">Create or update a screen mapping</p>
+              </div>
+            </div>
+
+            <form id="screenForm" class="editor-form">
+              <input type="hidden" id="screenId">
+
+              <label class="field">
+                <span>Screen Name</span>
+                <input type="text" id="screenName" placeholder="e.g. Operations" required>
+              </label>
+
+              <label class="field">
+                <span>Physical Display</span>
+                <select id="screenDisplayIndex"></select>
+              </label>
+
+              <label class="checkbox-row">
+                <input type="checkbox" id="screenEnabled" checked>
+                <span>Enabled</span>
+              </label>
+
+              <div class="form-actions">
+                <button type="submit" class="primary">Save Screen</button>
+                <button type="button" id="btnResetScreen">Clear</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- DASHBOARDS -->
+      <section class="view" id="view-dashboards">
+        <div class="split-layout wide-right">
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Dashboards</h3>
+              <div class="toolbar-inline">
+                <label class="inline-field">
+                  <span>Screen</span>
+                  <select id="dashboardFilterScreen"></select>
+                </label>
+                <button id="btnAddDashboard" type="button">Add Dashboard</button>
+              </div>
+            </div>
+            <div id="dashboardsList" class="list-stack"></div>
+          </div>
+
+          <div class="panel" id="dashboardEditorPanel">
+            <div class="panel-header">
+              <div>
+                <h3 id="dashboardFormTitle">Add Dashboard</h3>
+                <p class="panel-subtitle" id="dashboardFormSubtitle">Create or update a dashboard entry</p>
+              </div>
+            </div>
+
+            <form id="dashboardForm" class="editor-form">
+              <input type="hidden" id="dashboardId">
+
+              <label class="field">
+                <span>Dashboard Name</span>
+                <input type="text" id="dashboardName" placeholder="e.g. SLA Board" required>
+              </label>
+
+              <label class="field">
+                <span>URL</span>
+                <input type="url" id="dashboardUrl" placeholder="https://..." required>
+              </label>
+
+              <div class="form-grid two-col">
+                <label class="field">
+                  <span>Screen</span>
+                  <select id="dashboardScreenId" required></select>
+                </label>
+
+                <label class="field">
+                  <span>Sequence</span>
+                  <input type="number" id="dashboardSequence" min="1" step="1" required>
+                </label>
+              </div>
+
+              <div class="form-grid two-col">
+                <label class="field">
+                  <span>Duration (seconds)</span>
+                  <input type="number" id="dashboardDurationSec" min="1" step="1" required>
+                </label>
+
+                <label class="field">
+                  <span>Zoom (%)</span>
+                  <input type="number" id="dashboardZoomPercent" min="10" step="5" required>
+                </label>
+              </div>
+
+              <div class="form-grid two-col">
+                <label class="field">
+                  <span>Vertical Offset (px)</span>
+                  <input type="number" id="dashboardScrollOffsetPx" min="0" step="10" value="0">
+                </label>
+                <div></div>
+              </div>
+
+              <details class="advanced-details">
+                <summary>Advanced</summary>
+
+                <div class="form-grid two-col advanced-grid">
+                  <label class="field">
+                    <span>Settle Delay (ms)</span>
+                    <input type="number" id="dashboardSettleMs" min="0" step="500" required>
+                  </label>
+
+                  <label class="field">
+                    <span>Timeout (ms)</span>
+                    <input type="number" id="dashboardTimeoutMs" min="1000" step="1000" required>
+                  </label>
+                </div>
+              </details>
+
+              <label class="checkbox-row">
+                <input type="checkbox" id="dashboardEnabled" checked>
+                <span>Enabled</span>
+              </label>
+
+              <div class="form-actions">
+                <button type="submit" class="primary">Save Dashboard</button>
+                <button type="button" id="btnPreviewDashboard">Preview Offset</button>
+                <button type="button" id="btnResetDashboard">Clear</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="view" id="view-settings">
+        <div class="panel settings-panel">
+          <div class="panel-header">
+            <h3>Application Settings</h3>
+          </div>
+
+          <div class="settings-grid">
+            <label class="toggle-card">
+              <div>
+                <strong>Kiosk Mode</strong>
+                <p>Fullscreen frameless wallboard windows</p>
+              </div>
+              <input type="checkbox" id="settingKioskMode">
+            </label>
+
+            <label class="toggle-card">
+              <div>
+                <strong>Tray-Only Startup</strong>
+                <p>Do not show the admin window on launch</p>
+              </div>
+              <input type="checkbox" id="settingTrayOnlyStartup">
+            </label>
+
+            <label class="toggle-card">
+              <div>
+                <strong>Hide Admin to Tray</strong>
+                <p>Closing the admin window hides it instead of exiting</p>
+              </div>
+              <input type="checkbox" id="settingHideAdminToTray">
+            </label>
+
+            <label class="toggle-card">
+              <div>
+                <strong>Start with Windows</strong>
+                <p>Launch the app automatically at sign-in</p>
+              </div>
+              <input type="checkbox" id="settingStartWithWindows">
+            </label>
+          </div>
+
+          <div class="settings-inline">
+            <label class="field small-field">
+              <span>Identify Overlay Seconds</span>
+              <input type="number" id="settingIdentifyOverlaySeconds" min="1" step="1">
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- RUNTIME -->
+      <section class="view" id="view-runtime">
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Runtime State</h3>
+          </div>
+          <div id="runtimeCards" class="cards-grid"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="admin.js"></script>
+</body>
+</html>
