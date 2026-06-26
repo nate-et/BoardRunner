@@ -333,9 +333,11 @@ function refreshTrayMenu() {
       click: () => {
         rotationPaused = !rotationPaused;
         writeLog('tray', rotationPaused ? 'Rotation paused' : 'Rotation resumed');
+
         if (!rotationPaused) {
           restartAllPlaylists();
         }
+
         refreshTrayMenu();
         notifyAdminState();
       }
@@ -421,6 +423,7 @@ function createAdminWindow() {
 
   adminWindow.on('close', (e) => {
     const hideToTray = !!getSetting('hideAdminToTray', true);
+
     if (!quitting && hideToTray) {
       e.preventDefault();
       adminWindow.hide();
@@ -460,7 +463,7 @@ function createPreviewWindow() {
     minHeight: 700,
     title: `${APP_NAME} Preview`,
     autoHideMenuBar: true,
-    backgroundColor: '#000000',
+    backgroundColor: '#ffffff',
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -563,7 +566,7 @@ function createDisplayWindow(displayBounds, title, partitionKey) {
     width: displayBounds.width,
     height: displayBounds.height,
     title,
-    backgroundColor: '#000000',
+    backgroundColor: '#ffffff',
     frame: !kiosk,
     fullscreen: kiosk,
     autoHideMenuBar: true,
@@ -603,7 +606,6 @@ function closeAllDisplayWindows() {
 
 function scheduleNext(screenId, delayMs) {
   const state = runtimeState.get(screenId);
-
   if (!state) return;
 
   if (state.nextTimer) {
@@ -618,7 +620,6 @@ function scheduleNext(screenId, delayMs) {
 
 function rebuildPlaylistIfNeeded(screenId) {
   const state = runtimeState.get(screenId);
-
   if (!state) return;
 
   state.playlist = getPlaylistForScreen(screenId);
@@ -638,85 +639,225 @@ function isProbablyTransparentOrInvalid(r, g, b, a) {
   return a === 0 || Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b);
 }
 
-async function sampleTopRightBackgroundColor(wc, logPrefix) {
+function normaliseCssRgbToHex(value) {
+  if (!value || typeof value !== 'string') return null;
+
+  const trimmed = value.trim().toLowerCase();
+
+  if (trimmed === 'transparent' || trimmed === 'rgba(0, 0, 0, 0)') {
+    return null;
+  }
+
+  if (trimmed.startsWith('#')) {
+    if (trimmed.length === 4) {
+      return '#' + trimmed[1] + trimmed[1] + trimmed[2] + trimmed[2] + trimmed[3] + trimmed[3];
+    }
+
+    if (trimmed.length === 7) {
+      return trimmed;
+    }
+
+    return null;
+  }
+
+  const rgbaMatch = trimmed.match(/rgba?\(([^)]+)\)/);
+
+  if (!rgbaMatch) return null;
+
+  const parts = rgbaMatch[1]
+    .split(',')
+    .map((part) => part.trim())
+    .map(Number);
+
+  if (parts.length < 3) return null;
+
+  const r = Math.max(0, Math.min(255, Math.round(parts[0])));
+  const g = Math.max(0, Math.min(255, Math.round(parts[1])));
+  const b = Math.max(0, Math.min(255, Math.round(parts[2])));
+
+  const a = parts.length >= 4 ? Number(parts[3]) : 1;
+
+  if (a === 0) return null;
+
+  return rgbToHex(r, g, b);
+}
+
+
+async function sampleTopRightBackgroundColorViaDom(wc, logPrefix) {
   try {
-    const owner = wc.getOwnerBrowserWindow();
+    const color = await wc.executeJavaScript(`
+      (() => {
+        const rightInsetPx = 140;
+        const topInsetPx = 16;
 
-    if (!owner || owner.isDestroyed()) return null;
+        function isUsefulColor(value) {
+          if (!value) return false;
 
-    const bounds = owner.getBounds();
+          const normalised = String(value).trim().toLowerCase();
 
-    const sampleSize = 18;
-    const padding = 10;
+          if (!normalised) return false;
+          if (normalised === 'transparent') return false;
+          if (normalised === 'rgba(0, 0, 0, 0)') return false;
 
-    const x = Math.max(0, bounds.width - sampleSize - padding);
-    const y = padding;
+          return true;
+        }
 
-    const image = await wc.capturePage({
-      x,
-      y,
-      width: sampleSize,
-      height: sampleSize
-    });
+        function getBackgroundFromElement(el) {
+          let current = el;
 
-    const bitmap = image.toBitmap();
+          while (current) {
+            try {
+              const style = window.getComputedStyle(current);
+              const bg = style.backgroundColor;
 
-    if (!bitmap || bitmap.length < 4) {
-      writeLog(logPrefix, 'Background sample failed: empty bitmap');
-      return null;
-    }
+              if (isUsefulColor(bg)) {
+                return bg;
+              }
+            } catch (_) {}
 
-    let totalR = 0;
-    let totalG = 0;
-    let totalB = 0;
-    let count = 0;
+            current = current.parentElement;
+          }
 
-    for (let i = 0; i < bitmap.length; i += 4) {
-      const b = bitmap[i];
-      const g = bitmap[i + 1];
-      const r = bitmap[i + 2];
-      const a = bitmap[i + 3];
+          try {
+            const htmlBg = window.getComputedStyle(document.documentElement).backgroundColor;
+            if (isUsefulColor(htmlBg)) return htmlBg;
+          } catch (_) {}
 
-      if (isProbablyTransparentOrInvalid(r, g, b, a)) continue;
+          try {
+            const bodyBg = window.getComputedStyle(document.body).backgroundColor;
+            if (isUsefulColor(bodyBg)) return bodyBg;
+          } catch (_) {}
 
-      totalR += r;
-      totalG += g;
-      totalB += b;
-      count += 1;
-    }
+          return null;
+        }
 
-    if (count === 0) {
-      writeLog(logPrefix, 'Background sample failed: no valid pixels');
-      return null;
-    }
+        const x = Math.max(0, window.innerWidth - rightInsetPx);
+        const y = topInsetPx;
 
-    const avgR = Math.round(totalR / count);
-    const avgG = Math.round(totalG / count);
-    const avgB = Math.round(totalB / count);
+        const pointEl = document.elementFromPoint(x, y);
+        const pointBg = getBackgroundFromElement(pointEl);
 
-    const hex = rgbToHex(avgR, avgG, avgB);
+        if (pointBg) return pointBg;
 
-    writeLog(logPrefix, `Sampled top-right background colour: ${hex}`);
+        const candidates = [
+          document.body,
+          document.documentElement,
+          document.querySelector('[class*="dashboard"]'),
+          document.querySelector('[class*="page"]'),
+          document.querySelector('[class*="container"]'),
+          document.querySelector('[class*="content"]')
+        ].filter(Boolean);
+
+        for (const candidate of candidates) {
+          const candidateBg = getBackgroundFromElement(candidate);
+          if (candidateBg) return candidateBg;
+        }
+
+        return '#ffffff';
+      })();
+    `, true);
+
+    const hex = normaliseCssRgbToHex(color) || '#ffffff';
+
+    writeLog(logPrefix, `Sampled inset top-right background colour via DOM: ${hex} (${color})`);
     return hex;
   } catch (err) {
-    writeLog(logPrefix, `Background sample failed: ${err.message}`);
-    return null;
+    writeLog(logPrefix, `DOM background sample failed: ${err.message}`);
+    return '#ffffff';
   }
 }
 
+async function sampleTopRightBackgroundColorViaCapture(wc, logPrefix) {
+  const owner = wc.getOwnerBrowserWindow();
+
+  if (!owner || owner.isDestroyed()) return null;
+
+  const bounds = owner.getBounds();
+
+  const sampleSize = 18;
+  const rightInsetPx = 140;
+  const topInsetPx = 16;
+
+  const x = Math.max(0, bounds.width - rightInsetPx);
+  const y = topInsetPx;
+
+  const image = await wc.capturePage({
+    x,
+    y,
+    width: sampleSize,
+    height: sampleSize
+  });
+
+  const bitmap = image.toBitmap();
+
+  if (!bitmap || bitmap.length < 4) {
+    writeLog(logPrefix, 'Background capture sample failed: empty bitmap');
+    return null;
+  }
+
+  let totalR = 0;
+  let totalG = 0;
+  let totalB = 0;
+  let count = 0;
+
+  for (let i = 0; i < bitmap.length; i += 4) {
+    const b = bitmap[i];
+    const g = bitmap[i + 1];
+    const r = bitmap[i + 2];
+    const a = bitmap[i + 3];
+
+    if (isProbablyTransparentOrInvalid(r, g, b, a)) continue;
+
+    totalR += r;
+    totalG += g;
+    totalB += b;
+    count += 1;
+  }
+
+  if (count === 0) {
+    writeLog(logPrefix, 'Background capture sample failed: no valid pixels');
+    return null;
+  }
+
+  const avgR = Math.round(totalR / count);
+  const avgG = Math.round(totalG / count);
+  const avgB = Math.round(totalB / count);
+
+  const hex = rgbToHex(avgR, avgG, avgB);
+
+  writeLog(logPrefix, `Sampled inset top-right background colour via capture: ${hex}`);
+  return hex;
+}
+
+async function sampleTopRightBackgroundColor(wc, logPrefix) {
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const captureColor = await sampleTopRightBackgroundColorViaCapture(wc, logPrefix);
+
+    if (captureColor) {
+      return captureColor;
+    }
+  } catch (err) {
+    writeLog(logPrefix, `Background capture sample failed, falling back to DOM: ${err.message}`);
+  }
+
+  return sampleTopRightBackgroundColorViaDom(wc, logPrefix);
+}
+
 async function applyPageBackgroundColor(wc, color, logPrefix) {
-  if (!color) return;
+  const safeColor = color || '#ffffff';
 
   try {
     const owner = wc.getOwnerBrowserWindow();
 
     if (owner && !owner.isDestroyed()) {
-      owner.setBackgroundColor(color);
+      owner.setBackgroundColor(safeColor);
     }
 
     await wc.executeJavaScript(`
       (() => {
-        const color = ${JSON.stringify(color)};
+        const color = ${JSON.stringify(safeColor)};
 
         try {
           document.documentElement.style.backgroundColor = color;
@@ -739,7 +880,7 @@ async function applyPageBackgroundColor(wc, color, logPrefix) {
       })();
     `, true);
 
-    writeLog(logPrefix, `Applied sampled background colour: ${color}`);
+    writeLog(logPrefix, `Applied sampled background colour: ${safeColor}`);
   } catch (err) {
     writeLog(logPrefix, `Failed to apply sampled background colour: ${err.message}`);
   }
@@ -751,11 +892,39 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
 
   await wc.setZoomFactor(zoomFactor);
 
-  const sampledBackgroundColor = await sampleTopRightBackgroundColor(wc, logPrefix);
+  async function sampleAndApplyBackground(label) {
+    try {
+      const sampledBackgroundColor = await sampleTopRightBackgroundColor(wc, logPrefix);
 
-  if (sampledBackgroundColor) {
-    await applyPageBackgroundColor(wc, sampledBackgroundColor, logPrefix);
+      if (sampledBackgroundColor) {
+        await applyPageBackgroundColor(wc, sampledBackgroundColor, logPrefix);
+        writeLog(logPrefix, `Background sample applied (${label}): ${sampledBackgroundColor}`);
+        return sampledBackgroundColor;
+      }
+    } catch (err) {
+      writeLog(logPrefix, `Background sample/apply failed (${label}): ${err.message}`);
+    }
+
+    return null;
   }
+
+  let finalBackgroundColor = null;
+
+  // Initial sample, but do not trust it as final because Halo may still be settling.
+  finalBackgroundColor = await sampleAndApplyBackground('initial');
+
+  // Re-sample after Halo has had time to render dark mode / widgets.
+  setTimeout(() => {
+    sampleAndApplyBackground('delayed-1s');
+  }, 1000);
+
+  setTimeout(() => {
+    sampleAndApplyBackground('delayed-2.5s');
+  }, 2500);
+
+  setTimeout(() => {
+    sampleAndApplyBackground('delayed-5s');
+  }, 5000);
 
   if (requestedOffsetPx > 0) {
     try {
@@ -907,6 +1076,7 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
           setTimeout(applyAbsoluteScroll, 750);
           setTimeout(applyAbsoluteScroll, 1500);
           setTimeout(applyAbsoluteScroll, 3000);
+          setTimeout(applyAbsoluteScroll, 5000);
 
           return first;
         })();
@@ -950,7 +1120,7 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
   return {
     zoomFactor,
     scrollOffsetPx: requestedOffsetPx,
-    sampledBackgroundColor
+    sampledBackgroundColor: finalBackgroundColor
   };
 }
 
