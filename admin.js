@@ -210,6 +210,90 @@ function screenExists(screenIdValue) {
   return configModel.screens.some((screenItem) => screenItem.id === screenIdValue);
 }
 
+
+function getDashboardHealthInfo(dashboardIdValue) {
+  if (!appState || !Array.isArray(appState.dashboardHealth)) return null;
+  return appState.dashboardHealth.find((item) => item.dashboardId === dashboardIdValue) || null;
+}
+function formatHealthTime(value) {
+  if (!value) return 'Never';
+  try { return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+  catch (_) { return String(value); }
+}
+function renderDashboardHealthSummary() {
+  const healthItems = Array.isArray(appState?.dashboardHealth) ? appState.dashboardHealth : [];
+  const total = configModel.dashboards.length;
+  const ok = healthItems.filter((item) => item.lastStatus === 'ok').length;
+  const failed = healthItems.filter((item) => item.lastStatus === 'fail').length;
+  const unknown = Math.max(0, total - ok - failed);
+  return `
+    <div class="dashboard-health-summary">
+      <div><span>Dashboard Health</span><strong>${ok} OK</strong></div>
+      <div><span>Failures</span><strong>${failed}</strong></div>
+      <div><span>Awaiting data</span><strong>${unknown}</strong></div>
+      <p>Health is populated after a dashboard completes a load or a preview. Existing already-loaded dashboards will show data after the next rotation, reload or preview.</p>
+    </div>
+  `;
+}
+function renderDashboardHealthHistory(dashboardIdValue) {
+  const health = getDashboardHealthInfo(dashboardIdValue);
+  if (!health || !Array.isArray(health.history) || health.history.length === 0) {
+    return `
+      <div class="dashboard-health-history empty">
+        <strong>Recent health</strong>
+        <span>Awaiting first load event. Click Preview or wait for the next rotation/reload.</span>
+      </div>
+    `;
+  }
+  const latest = health.history[0];
+  const latestClass = latest.status === 'ok' ? 'enabled' : 'disabled';
+  return `
+    <div class="dashboard-health-history">
+      <div class="dashboard-health-head">
+        <strong>Recent health</strong>
+        <span class="badge ${latestClass}">${latest.status === 'ok' ? 'Last OK' : 'Last failed'}</span>
+      </div>
+      <div class="health-history-list">
+        ${health.history.slice(0, 5).map((item) => `
+          <div class="health-history-row ${item.status === 'ok' ? 'ok' : 'fail'}">
+            <span>${item.status === 'ok' ? 'OK' : 'FAIL'}</span>
+            <span>${formatHealthTime(item.at)}</span>
+            <span>${item.status === 'ok' ? `${item.loadMs || '?'}ms · ${Number(item.offsetApplied || 0)}px offset` : escapeHtml(item.reason || 'Unknown failure')}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+function renderPreviewDiagnostics(result) {
+  const diagnostics = result && result.previewDiagnostics ? result.previewDiagnostics : null;
+  if (!diagnostics) return;
+  const scroll = diagnostics.scrollResult || {};
+  const metrics = diagnostics.pageMetrics || {};
+  let panel = document.getElementById('previewDiagnosticsPanel');
+  if (!panel && els.dashboardForm) {
+    panel = document.createElement('div');
+    panel.id = 'previewDiagnosticsPanel';
+    panel.className = 'preview-diagnostics-panel';
+    els.dashboardForm.insertAdjacentElement('afterend', panel);
+  }
+  if (!panel) return;
+  panel.innerHTML = `
+    <h4>Preview diagnostics</h4>
+    <div class="preview-diagnostics-grid">
+      <div><span>Offset requested</span><strong>${Number(diagnostics.scrollOffsetPx || 0)}px</strong></div>
+      <div><span>Offset applied</span><strong>${Number(scroll.appliedOffset || 0)}px</strong></div>
+      <div><span>Scroll target</span><strong>${escapeHtml(scroll.target || 'none')}</strong></div>
+      <div><span>Max offset</span><strong>${Number(scroll.maxOffset || 0)}px</strong></div>
+      <div><span>Page height</span><strong>${Number(metrics.pageHeight || 0)}px</strong></div>
+      <div><span>Viewport</span><strong>${Number(metrics.viewportHeight || 0)}px</strong></div>
+      <div><span>Zoom</span><strong>${Math.round(Number(diagnostics.zoomFactor || 1) * 100)}%</strong></div>
+      <div><span>Loaded</span><strong>${formatHealthTime(diagnostics.loadedAt)}</strong></div>
+    </div>
+    ${scroll.error ? `<p class="preview-diagnostics-error">${escapeHtml(scroll.error)}</p>` : ''}
+  `;
+}
+
 function formatSecondsFromMs(ms) {
   return `${Math.round(Number(ms || 0) / 1000)} sec`;
 }
@@ -287,6 +371,29 @@ function getDashboardCountForScreen(screenIdValue) {
   return configModel.dashboards.filter((dashboardItem) => dashboardItem.screenId === screenIdValue).length;
 }
 
+
+function getRuntimeScreenForScreenId(screenIdValue) {
+  return getRuntimeScreens().find((item) => item.screenId === screenIdValue) || null;
+}
+
+function renderScreenSnapshot(runtimeItem, label = 'screen') {
+  const snapshot = runtimeItem && runtimeItem.snapshot ? runtimeItem.snapshot : null;
+  if (snapshot && snapshot.dataUrl) {
+    return `
+      <div class="screen-snapshot live">
+        <img src="${snapshot.dataUrl}" alt="Live preview for ${escapeHtml(label)}">
+        <span>Live preview · ${formatHealthTime(snapshot.capturedAt)}</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="screen-snapshot placeholder">
+      <div class="snapshot-grid"></div>
+      <span>No live preview yet</span>
+    </div>
+  `;
+}
+
 function renderDisplayMap(targetElement, compact = false) {
   if (!targetElement) return;
 
@@ -301,11 +408,12 @@ function renderDisplayMap(targetElement, compact = false) {
     const assignedScreen = getScreenForDisplay(displayItem.index);
     const dashboardCount = assignedScreen ? getDashboardCountForScreen(assignedScreen.id) : 0;
     const isSelected = assignedScreen && assignedScreen.id === selectedScreenId;
+    const runtimeItem = assignedScreen ? getRuntimeScreenForScreenId(assignedScreen.id) : null;
 
     return `
       <div class="display-map-card ${assignedScreen ? '' : 'unassigned'} ${isSelected ? 'selected' : ''}" data-display-index="${displayItem.index}">
-        <h4>${escapeHtml(displayItem.label)}${displayItem.primary ? ' (Primary)' : ''}</h4>
-        <p>${escapeHtml(displayItem.size)}</p>
+        <div class="display-card-topline"><h4>${escapeHtml(displayItem.label)}${displayItem.primary ? ' (Primary)' : ''}</h4><span>${escapeHtml(displayItem.size)}</span></div>
+        ${renderScreenSnapshot(runtimeItem, assignedScreen ? assignedScreen.name : displayItem.label)}
         <div class="display-map-screen">
           <div>
             <strong>${escapeHtml(assignedScreen ? assignedScreen.name : 'Unassigned')}</strong><br>
@@ -484,6 +592,7 @@ function renderDashboards() {
   }
 
   els.dashboardsList.innerHTML = `
+    ${renderDashboardHealthSummary()}
     <p class="drag-hint">Tip: drag dashboards up or down to reorder them. Reordering only applies within the same screen.</p>
     ${list.map((dashboardItem) => `
       <div class="list-card ${dashboardItem.id === selectedDashboardId ? 'selected' : ''}"
@@ -500,6 +609,7 @@ function renderDashboards() {
           <span class="badge ${dashboardItem.enabled !== false ? 'enabled' : 'disabled'}">${dashboardItem.enabled !== false ? 'Enabled' : 'Disabled'}</span>
         </div>
         <p class="url-line">${escapeHtml(dashboardItem.url)}</p>
+        ${renderDashboardHealthHistory(dashboardItem.id)}
         <div class="item-actions">
           <button type="button" data-dashboard-edit="${escapeHtml(dashboardItem.id)}">Edit</button>
           <button type="button" data-dashboard-preview="${escapeHtml(dashboardItem.id)}">Preview</button>
@@ -538,14 +648,17 @@ function renderRuntime() {
   }
 
   els.runtimeCards.innerHTML = runtime.map((item) => `
-    <div class="runtime-card">
-      <h4>${escapeHtml(item.screenName || item.screenId)}</h4>
-      <div class="meta-row">
-        <span class="badge">Display ${Number(item.displayIndex) + 1}</span>
-        <span class="badge">${Number(item.currentIndex) + 1} / ${item.totalItems}</span>
+    <div class="runtime-card runtime-card-polished">
+      ${renderScreenSnapshot(item, item.screenName || item.screenId)}
+      <div class="runtime-details">
+        <h4>${escapeHtml(item.screenName || item.screenId)}</h4>
+        <div class="meta-row">
+          <span class="badge">Display ${Number(item.displayIndex) + 1}</span>
+          <span class="badge">${Number(item.currentIndex) + 1} / ${item.totalItems}</span>
+        </div>
+        <p><strong>Current Dashboard:</strong> ${escapeHtml(item.currentDashboard || 'N/A')}</p>
+        <p class="url-line">${escapeHtml(item.currentUrl || '')}</p>
       </div>
-      <p><strong>Current Dashboard:</strong> ${escapeHtml(item.currentDashboard || 'N/A')}</p>
-      <p class="url-line">${escapeHtml(item.currentUrl || '')}</p>
     </div>
   `).join('');
 }
@@ -791,7 +904,32 @@ async function previewDashboard(dashboard) {
       return;
     }
 
-    showSuccess('Preview opened.');
+    renderPreviewDiagnostics(result);
+    if (appState && Array.isArray(appState.dashboardHealth) && result.previewDiagnostics && result.previewDiagnostics.dashboardId) {
+      const existing = appState.dashboardHealth.find((item) => item.dashboardId === result.previewDiagnostics.dashboardId);
+      const event = {
+        status: 'ok',
+        at: result.previewDiagnostics.loadedAt,
+        dashboardId: result.previewDiagnostics.dashboardId,
+        dashboardName: result.previewDiagnostics.dashboardName,
+        reason: 'preview',
+        loadMs: null,
+        offsetRequested: result.previewDiagnostics.scrollOffsetPx,
+        offsetApplied: result.previewDiagnostics.scrollResult ? result.previewDiagnostics.scrollResult.appliedOffset : null,
+        offsetTarget: result.previewDiagnostics.scrollResult ? result.previewDiagnostics.scrollResult.target : '',
+        pageHeight: result.previewDiagnostics.pageMetrics ? result.previewDiagnostics.pageMetrics.pageHeight : null,
+        viewportHeight: result.previewDiagnostics.pageMetrics ? result.previewDiagnostics.pageMetrics.viewportHeight : null
+      };
+      if (existing) {
+        existing.lastStatus = 'ok';
+        existing.lastCheckedAt = event.at;
+        existing.history = [event, ...(existing.history || [])].slice(0, 10);
+      } else {
+        appState.dashboardHealth.push({ dashboardId: event.dashboardId, lastStatus: 'ok', lastCheckedAt: event.at, history: [event] });
+      }
+      renderDashboards();
+    }
+    showSuccess('Preview opened and diagnostics updated.');
   } catch (err) {
     showFailure(`Preview failed: ${err.message}`);
   }
@@ -1302,6 +1440,7 @@ function bindAppStateSubscription() {
     bindStatusStrip();
     renderOverview();
     renderScreens();
+    renderDashboards();
     renderRuntime();
   });
 }

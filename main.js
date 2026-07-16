@@ -31,6 +31,7 @@ let configCache = null;
 let rotationPaused = false;
 let displayWindows = new Map();
 let runtimeState = new Map();
+let screenSnapshots = new Map();
 let identifyWindows = [];
 let quitting = false;
 
@@ -559,6 +560,38 @@ function createPreviewWindow() {
   return previewWindow;
 }
 
+
+async function captureScreenSnapshot(screenId) {
+  try {
+    const win = displayWindows.get(screenId);
+    if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return null;
+
+    const image = await win.webContents.capturePage();
+    const resized = image.resize({ width: 640, quality: 'good' });
+    const dataUrl = resized.toDataURL();
+    const snapshot = {
+      screenId,
+      capturedAt: new Date().toISOString(),
+      dataUrl
+    };
+
+    screenSnapshots.set(screenId, snapshot);
+    notifyAdminState();
+    return snapshot;
+  } catch (err) {
+    writeLog('snapshot', `Failed to capture ${screenId}: ${err.message}`);
+    return null;
+  }
+}
+
+function scheduleScreenSnapshot(screenId, delayMs = 1000) {
+  setTimeout(() => {
+    captureScreenSnapshot(screenId).catch((err) => {
+      writeLog('snapshot', `Snapshot schedule failed for ${screenId}: ${err.message}`);
+    });
+  }, delayMs);
+}
+
 function clearTimers(screenId) {
   const state = runtimeState.get(screenId);
   if (!state) return;
@@ -574,7 +607,11 @@ function getDashboardHealth(dashboardId) {
   if (!dashboardHealth.has(dashboardId)) {
     dashboardHealth.set(dashboardId, {
       failures: 0,
-      cooldownUntil: null
+      cooldownUntil: null,
+      lastStatus: 'unknown',
+      lastError: null,
+      lastCheckedAt: null,
+      history: []
     });
   }
 
@@ -586,7 +623,32 @@ function isDashboardCoolingDown(dashboardId) {
   return !!(info.cooldownUntil && info.cooldownUntil > Date.now());
 }
 
-function noteDashboardSuccess(dashboardId) {
+function recordDashboardHealthEvent(dashboardId, status, detail = {}) {
+  const info = getDashboardHealth(dashboardId);
+  const event = {
+    status,
+    at: new Date().toISOString(),
+    dashboardId,
+    dashboardName: detail.dashboardName || '',
+    screenId: detail.screenId || '',
+    screenName: detail.screenName || '',
+    url: detail.url || '',
+    reason: detail.reason || '',
+    loadMs: detail.loadMs || null,
+    offsetRequested: detail.offsetRequested ?? null,
+    offsetApplied: detail.offsetApplied ?? null,
+    offsetTarget: detail.offsetTarget || '',
+    pageHeight: detail.pageHeight ?? null,
+    viewportHeight: detail.viewportHeight ?? null
+  };
+  info.lastStatus = status;
+  info.lastError = status === 'ok' ? null : event.reason;
+  info.lastCheckedAt = event.at;
+  info.history = [event, ...(info.history || [])].slice(0, 10);
+  return event;
+}
+
+function noteDashboardSuccess(dashboardId, detail = {}) {
   const info = getDashboardHealth(dashboardId);
 
   if (info.failures > 0 || info.cooldownUntil) {
@@ -672,6 +734,7 @@ function closeAllDisplayWindows() {
   }
 
   displayWindows.clear();
+  screenSnapshots.clear();
 }
 
 function scheduleNext(screenId, delayMs) {
@@ -1152,6 +1215,7 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
         })();
       `, true);
 
+      scrollResult = result || scrollResult;
       writeLog(
         logPrefix,
         `Scroll offset result: requested=${result.requestedOffset}px applied=${result.appliedOffset}px max=${result.maxOffset}px target=${result.target} before=${result.before} after=${result.after}`
@@ -1232,7 +1296,18 @@ async function loadDashboardIntoWindow(screenId) {
       wc.removeListener('did-fail-load', onDidFailLoad);
 
       const viewState = await applyDashboardView(wc, current, screenId);
-      noteDashboardSuccess(current.id);
+      noteDashboardSuccess(current.id, {
+        dashboardName: current.name,
+        screenId,
+        screenName: state.screen ? state.screen.name : '',
+        url: current.url,
+        loadMs: Date.now() - loadStartedMs,
+        offsetRequested: Number(current.scrollOffsetPx || 0),
+        offsetApplied: viewState.scrollResult ? viewState.scrollResult.appliedOffset : null,
+        offsetTarget: viewState.scrollResult ? viewState.scrollResult.target : '',
+        pageHeight: viewState.pageMetrics ? viewState.pageMetrics.pageHeight : null,
+        viewportHeight: viewState.pageMetrics ? viewState.pageMetrics.viewportHeight : null
+      });
 
       writeLog(
         screenId,
@@ -1240,6 +1315,8 @@ async function loadDashboardIntoWindow(screenId) {
       );
 
       scheduleNext(screenId, durationMs + settleMs);
+      scheduleScreenSnapshot(screenId, 600);
+      scheduleScreenSnapshot(screenId, 3000);
       notifyAdminState();
     } catch (err) {
       noteDashboardFailure(current, `post-load:${err.message}`);
@@ -1329,6 +1406,7 @@ function reloadCurrentScreens() {
     if (win && !win.isDestroyed()) {
       writeLog('reload', `Reloading ${screenId}`);
       win.webContents.reloadIgnoringCache();
+      scheduleScreenSnapshot(screenId, 3500);
     }
   }
 }
@@ -1515,8 +1593,35 @@ async function previewDashboard(dashboard) {
       try {
         const viewState = await applyDashboardView(win.webContents, dashboard, 'preview');
         win.setTitle(`${APP_NAME} Preview - ${dashboard.name || 'Dashboard'} (${viewState.scrollOffsetPx}px offset)`);
+        if (dashboard.id) {
+          recordDashboardHealthEvent(dashboard.id, 'ok', {
+            dashboardName: dashboard.name || '',
+            screenId: 'preview',
+            screenName: 'Preview',
+            url: dashboard.url,
+            reason: 'preview',
+            offsetRequested: Number(dashboard.scrollOffsetPx || 0),
+            offsetApplied: viewState.scrollResult ? viewState.scrollResult.appliedOffset : null,
+            offsetTarget: viewState.scrollResult ? viewState.scrollResult.target : '',
+            pageHeight: viewState.pageMetrics ? viewState.pageMetrics.pageHeight : null,
+            viewportHeight: viewState.pageMetrics ? viewState.pageMetrics.viewportHeight : null
+          });
+        }
         writeLog('preview', `Preview loaded: ${dashboard.name || dashboard.url}`);
-        finish({ ok: true });
+        finish({
+          ok: true,
+          previewDiagnostics: {
+            dashboardId: dashboard.id || '',
+            dashboardName: dashboard.name || '',
+            url: dashboard.url,
+            zoomFactor: viewState.zoomFactor,
+            scrollOffsetPx: viewState.scrollOffsetPx,
+            sampledBackgroundColor: viewState.sampledBackgroundColor || null,
+            scrollResult: viewState.scrollResult || null,
+            pageMetrics: viewState.pageMetrics || null,
+            loadedAt: new Date().toISOString()
+          }
+        });
       } catch (err) {
         fail(`Preview post-load failed: ${err.message}`);
       }
@@ -1555,7 +1660,8 @@ function getAdminState() {
       currentIndex: state.index,
       totalItems: state.playlist ? state.playlist.length : 0,
       currentDashboard: current ? current.name : '',
-      currentUrl: current ? current.url : ''
+      currentUrl: current ? current.url : '',
+      snapshot: screenSnapshots.get(screenId) || null
     };
   });
 
@@ -1565,6 +1671,19 @@ function getAdminState() {
     settings: configCache.settings,
     screens: configCache.screens,
     dashboards: configCache.dashboards,
+    dashboardHealth: configCache.dashboards.map((dashboard) => {
+      const info = getDashboardHealth(dashboard.id);
+      return {
+        dashboardId: dashboard.id,
+        dashboardName: dashboard.name,
+        failures: info.failures || 0,
+        cooldownUntil: info.cooldownUntil ? new Date(info.cooldownUntil).toISOString() : null,
+        lastStatus: info.lastStatus || 'unknown',
+        lastError: info.lastError || null,
+        lastCheckedAt: info.lastCheckedAt || null,
+        history: info.history || []
+      };
+    }),
     detectedDisplays: getDetectedDisplays(),
     runtimeScreens
   };
@@ -1638,6 +1757,10 @@ ipcMain.handle('get-config', async () => configCache);
 ipcMain.handle('get-state', async () => getAdminState());
 
 ipcMain.handle('get-detected-displays', async () => getDetectedDisplays());
+
+ipcMain.handle('capture-screen-snapshot', async (_, screenId) => {
+  return await captureScreenSnapshot(screenId);
+});
 
 ipcMain.handle('open-config-folder', async () => {
   ensureDir(USER_DATA);
@@ -1778,8 +1901,8 @@ ipcMain.handle('show-admin', async () => {
 
 ipcMain.handle('preview-dashboard', async (_, dashboard) => {
   try {
-    await previewDashboard(dashboard);
-    return { ok: true };
+    const result = await previewDashboard(dashboard);
+    return result || { ok: true };
   } catch (err) {
     writeLog('preview', `Preview failed: ${err.message}`);
     return { ok: false, error: err.message };
