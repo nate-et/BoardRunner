@@ -7,6 +7,8 @@ let draggedDashboardId = null;
 let draggedPlaylistIndex = null;
 let dirty = false;
 let studioUpdateTimer = null;
+let lastRuntimeLayoutSignature = '';
+let lastHealthSignature = '';
 
 const els = {
   toastContainer: document.getElementById('toastContainer'),
@@ -88,6 +90,21 @@ const viewMeta = {
   runtime: { title: 'Runtime', subtitle: 'Current playback, previews and health state' },
   settings: { title: 'Settings', subtitle: 'Application startup and behaviour' }
 };
+
+
+function sanitizeUrlInput(value) {
+  let raw = String(value || '').trim();
+  const hrefMatch = raw.match(/href\s*=\s*["']([^"']+)["']/i);
+  if (hrefMatch && hrefMatch[1]) raw = hrefMatch[1].trim();
+  raw = raw
+    .replace(/<[^>]*>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) raw = raw.slice(1, -1).trim();
+  return raw;
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -178,11 +195,85 @@ function setView(viewName) {
 }
 
 function renderSnapshot(runtimeItem, label = 'Screen') {
+  const screenId = runtimeItem && runtimeItem.screenId ? runtimeItem.screenId : '';
   const snapshot = runtimeItem && runtimeItem.snapshot ? runtimeItem.snapshot : null;
+  const screenAttr = screenId ? `data-snapshot-screen="${escapeHtml(screenId)}"` : '';
+
   if (snapshot && snapshot.dataUrl) {
-    return `<div class="screen-shot is-live"><img src="${snapshot.dataUrl}" alt="Preview for ${escapeHtml(label)}"><span>Live snapshot · ${formatTime(snapshot.capturedAt)}</span></div>`;
+    return `<div class="screen-shot is-live" ${screenAttr} data-snapshot-at="${escapeHtml(snapshot.capturedAt || '')}"><img src="${snapshot.dataUrl}" alt="Preview for ${escapeHtml(label)}"><span>Live snapshot · ${formatTime(snapshot.capturedAt)}</span></div>`;
   }
-  return `<div class="screen-shot empty"><div class="grid-wash"></div><span>Waiting for live snapshot</span></div>`;
+
+  return `<div class="screen-shot empty" ${screenAttr} data-snapshot-at=""><div class="grid-wash"></div><span>Waiting for live snapshot</span></div>`;
+}
+
+function getRuntimeLayoutSignature(state = appState) {
+  const runtime = Array.isArray(state?.runtimeScreens) ? state.runtimeScreens : [];
+  const displays = Array.isArray(state?.detectedDisplays) ? state.detectedDisplays : [];
+
+  return JSON.stringify({
+    displays: displays.map((item) => [item.index, item.id, item.size, item.primary]),
+    runtime: runtime.map((item) => [
+      item.screenId,
+      item.screenName,
+      item.displayIndex,
+      item.currentIndex,
+      item.totalItems,
+      item.currentDashboard,
+      item.currentUrl,
+      item.currentPlaylist
+    ])
+  });
+}
+
+function getHealthSignature(state = appState) {
+  const health = Array.isArray(state?.dashboardHealth) ? state.dashboardHealth : [];
+  return JSON.stringify(health.map((item) => [
+    item.dashboardId,
+    item.lastStatus,
+    item.lastError,
+    item.cooldownUntil
+  ]));
+}
+
+function updateLiveSnapshotsOnly(state = appState) {
+  const runtime = Array.isArray(state?.runtimeScreens) ? state.runtimeScreens : [];
+
+  runtime.forEach((item) => {
+    if (!item || !item.screenId || !item.snapshot || !item.snapshot.dataUrl) return;
+
+    const nodes = Array.from(document.querySelectorAll('[data-snapshot-screen]'))
+      .filter((node) => node.getAttribute('data-snapshot-screen') === item.screenId);
+
+    nodes.forEach((node) => {
+      const capturedAt = item.snapshot.capturedAt || '';
+      if (node.getAttribute('data-snapshot-at') === capturedAt) return;
+
+      node.classList.remove('empty');
+      node.classList.add('is-live');
+      node.setAttribute('data-snapshot-at', capturedAt);
+
+      let img = node.querySelector('img');
+      let label = node.querySelector('span');
+
+      if (!img) {
+        node.innerHTML = '<img alt="Live preview"><span></span>';
+        img = node.querySelector('img');
+        label = node.querySelector('span');
+      }
+
+      if (img && img.getAttribute('src') !== item.snapshot.dataUrl) {
+        img.style.opacity = '0.35';
+        img.onload = () => {
+          img.style.opacity = '1';
+        };
+        img.src = item.snapshot.dataUrl;
+      }
+
+      if (label) {
+        label.textContent = `Live snapshot · ${formatTime(capturedAt)}`;
+      }
+    });
+  });
 }
 
 function renderStatusStrip() {
@@ -387,6 +478,7 @@ function getStudioDashboardModel() {
   if (!dashboard) return null;
   return {
     ...dashboard,
+    url: sanitizeUrlInput(dashboard.url),
     zoomFactor: Number(els.studioZoomNumber?.value || 100) / 100,
     scrollOffsetPx: Number(els.studioOffsetNumber?.value || 0)
   };
@@ -409,7 +501,7 @@ function buildDashboardFromForm() {
   return {
     id: els.dashboardId.value || uid('db'),
     name: els.dashboardName.value.trim(),
-    url: els.dashboardUrl.value.trim(),
+    url: sanitizeUrlInput(els.dashboardUrl.value),
     sequence: 1,
     durationMs: Number(els.dashboardDurationSec.value || 30) * 1000,
     zoomFactor: Number(els.dashboardZoomPercent.value || 100) / 100,
@@ -630,6 +722,9 @@ function bindEvents() {
   els.dashboardForm?.addEventListener('submit', (e) => { e.preventDefault(); const model = buildDashboardFromForm(); const idx = configModel.dashboards.findIndex((dashboard) => dashboard.id === model.id); if (idx >= 0) configModel.dashboards[idx] = { ...configModel.dashboards[idx], ...model }; else configModel.dashboards.push(model); selectedDashboardId = model.id; markDirty(); renderAll(); populateDashboardForm(model.id); showSuccess('Dashboard saved in draft. Publish to apply.'); });
   els.btnAddDashboard?.addEventListener('click', () => { resetDashboardForm(); setView('library'); });
   els.btnResetDashboard?.addEventListener('click', resetDashboardForm);
+  els.dashboardUrl?.addEventListener('blur', () => {
+    els.dashboardUrl.value = sanitizeUrlInput(els.dashboardUrl.value);
+  });
   els.btnPreviewDashboard?.addEventListener('click', () => { const dashboard = buildDashboardFromForm(); if (!dashboard.url) return showFailure('Preview requires a URL.'); previewDashboard(dashboard); });
   els.dashboardLibraryList?.addEventListener('click', (e) => { const edit = e.target.closest('[data-dashboard-edit]'); const preview = e.target.closest('[data-dashboard-preview]'); const studio = e.target.closest('[data-dashboard-studio]'); const del = e.target.closest('[data-dashboard-delete]'); if (edit) populateDashboardForm(edit.dataset.dashboardEdit); if (preview) { const d = getDashboard(preview.dataset.dashboardPreview); if (d) previewDashboard(d); } if (studio) { selectedDashboardId = studio.dataset.dashboardStudio; setView('studio'); renderStudioOptions(); } if (del && window.confirm('Delete this dashboard?')) { configModel.dashboards = configModel.dashboards.filter((d) => d.id !== del.dataset.dashboardDelete); configModel.playlists.forEach((p) => p.items = p.items.filter((i) => i.dashboardId !== del.dataset.dashboardDelete)); markDirty(); renderAll(); } });
   els.studioDashboardSelect?.addEventListener('change', () => { selectedDashboardId = els.studioDashboardSelect.value; syncStudioFromDashboard(); });
@@ -639,7 +734,29 @@ function bindEvents() {
   document.querySelectorAll('[data-offset-nudge]').forEach((button) => button.addEventListener('click', () => { const next = Math.max(0, Number(els.studioOffsetNumber.value || 0) + Number(button.dataset.offsetNudge)); els.studioOffsetNumber.value = next; els.studioOffsetRange.value = next; scheduleStudioUpdate(); }));
   els.btnStudioReset?.addEventListener('click', () => { els.studioOffsetNumber.value = 0; els.studioOffsetRange.value = 0; scheduleStudioUpdate(); });
   els.btnStudioApplyDefault?.addEventListener('click', () => { const dashboard = getDashboard(selectedDashboardId); if (!dashboard) return; dashboard.scrollOffsetPx = Number(els.studioOffsetNumber.value || 0); dashboard.defaultScrollOffsetPx = dashboard.scrollOffsetPx; dashboard.zoomFactor = Number(els.studioZoomNumber.value || 100) / 100; dashboard.defaultZoomFactor = dashboard.zoomFactor; markDirty(); renderAll(); showSuccess('Offset and zoom applied to dashboard draft.'); });
-  window.wallboardApi.onAppState((state) => { appState = state; renderStatusStrip(); renderHome(); renderDisplays(); renderRuntime(); renderDashboardLibrary(); });
+  window.wallboardApi.onAppState((state) => {
+    const nextLayoutSignature = getRuntimeLayoutSignature(state);
+    const nextHealthSignature = getHealthSignature(state);
+    const layoutChanged = nextLayoutSignature !== lastRuntimeLayoutSignature;
+    const healthChanged = nextHealthSignature !== lastHealthSignature;
+
+    appState = state;
+    renderStatusStrip();
+
+    if (layoutChanged) {
+      lastRuntimeLayoutSignature = nextLayoutSignature;
+      renderHome();
+      renderDisplays();
+      renderRuntime();
+    } else {
+      updateLiveSnapshotsOnly(state);
+    }
+
+    if (healthChanged) {
+      lastHealthSignature = nextHealthSignature;
+      renderDashboardLibrary();
+    }
+  });
 }
 
 function scheduleStudioUpdate() {
@@ -658,6 +775,8 @@ async function init() {
     configModel = deepClone(await window.wallboardApi.getConfig());
     appState = await window.wallboardApi.getState();
     normaliseConfig();
+    lastRuntimeLayoutSignature = getRuntimeLayoutSignature(appState);
+    lastHealthSignature = getHealthSignature(appState);
     bindEvents();
     renderAll();
     resetDashboardForm();

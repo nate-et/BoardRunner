@@ -283,7 +283,7 @@ function migrateDashboardsToPlaylists(config) {
 
 function mergeConfigWithDefaults(config) {
   const defaults = defaultConfig();
-  const migrated = migrateDashboardsToPlaylists(config || defaults);
+  const migrated = normaliseDashboardUrls(migrateDashboardsToPlaylists(config || defaults));
 
   return {
     settings: {
@@ -375,7 +375,7 @@ function pruneOldConfigBackups(maxBackups = 25) {
 
 
 function saveConfig(config) {
-  const merged = mergeConfigWithDefaults(config);
+  const merged = mergeConfigWithDefaults(normaliseDashboardUrls(config));
   validateConfig(merged);
 
   if (fs.existsSync(USER_CONFIG_PATH) || configCache) {
@@ -394,6 +394,44 @@ function saveConfig(config) {
 function persistCurrentConfig() {
   if (!configCache) return;
   writeUserConfig(configCache);
+}
+
+
+function sanitizeDashboardUrl(value) {
+  let raw = String(value || '').trim();
+  if (!raw) return raw;
+
+  const hrefMatch = raw.match(/href\s*=\s*["']([^"']+)["']/i);
+  if (hrefMatch && hrefMatch[1]) {
+    raw = hrefMatch[1].trim();
+  }
+
+  raw = raw
+    .replace(/<[^>]*>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    raw = raw.slice(1, -1).trim();
+  }
+
+  return raw;
+}
+
+function normaliseDashboardUrls(config) {
+  if (!config || !Array.isArray(config.dashboards)) return config;
+  config.dashboards = config.dashboards.map((dashboard) => ({
+    ...dashboard,
+    url: sanitizeDashboardUrl(dashboard.url)
+  }));
+  return config;
+}
+
+function clearDashboardHealthState(reason = 'manual') {
+  dashboardHealth.clear();
+  writeLog('health', `Dashboard health state cleared (${reason})`);
 }
 
 function getSetting(name, fallback) {
@@ -805,12 +843,43 @@ function getPlaylistForScreen(screenId) {
       return playlistDashboards;
     }
 
+    const cooldownBypassed = playlist.items
+      .filter((item) => item.enabled !== false)
+      .map((item, index) => {
+        const dashboard = configCache.dashboards.find((candidate) => candidate.id === item.dashboardId);
+        if (!dashboard || dashboard.enabled === false) return null;
+        return {
+          ...dashboard,
+          playlistItemId: item.id || `${playlist.id}-${dashboard.id}-${index}`,
+          playlistId: playlist.id,
+          playlistName: playlist.name,
+          sequence: index + 1,
+          durationMs: Number(item.durationMs ?? dashboard.durationMs ?? 30000),
+          zoomFactor: Number(item.zoomFactor ?? dashboard.zoomFactor ?? dashboard.defaultZoomFactor ?? 1),
+          scrollOffsetPx: Number(item.scrollOffsetPx ?? dashboard.scrollOffsetPx ?? dashboard.defaultScrollOffsetPx ?? 0),
+          settleMs: Number(item.settleMs ?? dashboard.settleMs ?? 3000),
+          timeoutMs: Number(item.timeoutMs ?? dashboard.timeoutMs ?? 20000)
+        };
+      })
+      .filter(Boolean);
+
+    if (cooldownBypassed.length > 0) {
+      writeLog('playlist', `Playlist ${playlist.name} only had cooled-down dashboards for ${screenId}; bypassing cooldown to keep playback running`);
+      return cooldownBypassed;
+    }
+
     writeLog('playlist', `Playlist ${playlist.name} produced no playable dashboards for ${screenId}; falling back to legacy screen assignments`);
   }
 
-  return configCache.dashboards
+  const legacyPlayable = configCache.dashboards
     .filter((d) => d.enabled !== false && d.screenId === screenId)
     .filter((d) => !isDashboardCoolingDown(d.id))
+    .sort((a, b) => (Number(a.sequence) || 0) - (Number(b.sequence) || 0));
+
+  if (legacyPlayable.length > 0) return legacyPlayable;
+
+  return configCache.dashboards
+    .filter((d) => d.enabled !== false && d.screenId === screenId)
     .sort((a, b) => (Number(a.sequence) || 0) - (Number(b.sequence) || 0));
 }
 
@@ -1409,8 +1478,11 @@ async function loadDashboardIntoWindow(screenId) {
   const durationMs = Number(current.durationMs || 30000);
   const settleMs = Number(current.settleMs || 3000);
   const timeoutMs = Number(current.timeoutMs || 20000);
+  const loadStartedMs = Date.now();
+  const loadUrl = sanitizeDashboardUrl(current.url);
+  current.url = loadUrl;
 
-  writeLog(screenId, `Loading: ${current.name} | ${current.url}`);
+  writeLog(screenId, `Loading: ${current.name} | ${loadUrl}`);
 
   const onDidFinishLoad = async () => {
     try {
@@ -1481,7 +1553,7 @@ async function loadDashboardIntoWindow(screenId) {
   }, timeoutMs);
 
   try {
-    await win.loadURL(current.url);
+    await win.loadURL(loadUrl);
   } catch (err) {
     if (state.loadFailTimer) {
       clearTimeout(state.loadFailTimer);
@@ -1556,6 +1628,7 @@ function applyKioskModeToAllWindows() {
 }
 
 function startConfiguredScreens() {
+  clearDashboardHealthState('screen restart');
   closeAllDisplayWindows();
   runtimeState = new Map();
 
@@ -1750,6 +1823,7 @@ async function previewDashboard(dashboard) {
     throw new Error('Preview requires a dashboard URL');
   }
 
+  dashboard.url = sanitizeDashboardUrl(dashboard.url);
   const win = createPreviewWindow();
   const timeoutMs = Number(dashboard.timeoutMs || 20000);
 
