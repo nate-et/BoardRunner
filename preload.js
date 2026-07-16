@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('wallboardApi', {
 
   showAdmin: () => ipcRenderer.invoke('show-admin'),
   previewDashboard: (dashboard) => ipcRenderer.invoke('preview-dashboard', dashboard),
+  updatePreviewView: (dashboard) => ipcRenderer.invoke('update-preview-view', dashboard),
 
   onAppState: (callback) => ipcRenderer.on('app-state', (_, data) => callback(data))
 });

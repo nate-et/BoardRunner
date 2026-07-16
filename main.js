@@ -76,8 +76,11 @@ function defaultConfig() {
       maxConsecutiveFailures: 3,
       dashboardCooldownMinutes: 10,
       restartOnResume: true,
-      restartOnDisplayChange: true
+      restartOnDisplayChange: true,
+      stagedPublishEnabled: true,
+      applyMode: 'next-rotation'
     },
+    playlists: [],
     screens: [
       {
         id: 'screen-1',
@@ -133,6 +136,9 @@ function validateConfig(config) {
   if (!Array.isArray(config.dashboards)) {
     throw new Error('Config must contain dashboards array');
   }
+  if (config.playlists !== undefined && !Array.isArray(config.playlists)) {
+    throw new Error('Config playlists must be an array');
+  }
 
   const screenIds = new Set();
 
@@ -169,7 +175,7 @@ function validateConfig(config) {
       throw new Error(`Dashboard ${db.name} is missing URL`);
     }
 
-    if (!db.screenId || !screenIds.has(db.screenId)) {
+    if (db.screenId && !screenIds.has(db.screenId)) {
       throw new Error(`Dashboard ${db.name} references an invalid screen`);
     }
 
@@ -189,18 +195,104 @@ function validateConfig(config) {
       throw new Error(`Dashboard ${db.name} has invalid scrollOffsetPx`);
     }
   }
+
+  const dashboardIds = new Set(config.dashboards.map((db) => db.id));
+  const playlistIds = new Set();
+
+  for (const [i, playlist] of (config.playlists || []).entries()) {
+    if (!playlist.id || typeof playlist.id !== 'string') {
+      throw new Error(`Playlist ${i + 1} is missing id`);
+    }
+    if (!playlist.name || typeof playlist.name !== 'string') {
+      throw new Error(`Playlist ${i + 1} is missing name`);
+    }
+    if (playlistIds.has(playlist.id)) {
+      throw new Error(`Duplicate playlist id: ${playlist.id}`);
+    }
+    playlistIds.add(playlist.id);
+    if (!Array.isArray(playlist.items)) {
+      throw new Error(`Playlist ${playlist.name} must contain items array`);
+    }
+    for (const [itemIndex, item] of playlist.items.entries()) {
+      if (!item.dashboardId || !dashboardIds.has(item.dashboardId)) {
+        throw new Error(`Playlist ${playlist.name} item ${itemIndex + 1} references an invalid dashboard`);
+      }
+      if (Number(item.durationMs || 0) <= 0) {
+        throw new Error(`Playlist ${playlist.name} item ${itemIndex + 1} has invalid durationMs`);
+      }
+    }
+  }
+
+  for (const scr of config.screens) {
+    if (scr.playlistId && !playlistIds.has(scr.playlistId)) {
+      throw new Error(`Screen ${scr.name} references an invalid playlist`);
+    }
+  }
+}
+
+
+function createId(prefix, source, index = 0) {
+  const safe = String(source || `${prefix}-${index + 1}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || `${prefix}-${index + 1}`;
+  return `${prefix}-${safe}`;
+}
+
+function migrateDashboardsToPlaylists(config) {
+  const migrated = {
+    ...config,
+    settings: { ...(config.settings || {}) },
+    screens: Array.isArray(config.screens) ? config.screens.map((screenItem) => ({ ...screenItem })) : [],
+    dashboards: Array.isArray(config.dashboards) ? config.dashboards.map((dashboardItem) => ({ ...dashboardItem })) : [],
+    playlists: Array.isArray(config.playlists) ? config.playlists.map((playlist) => ({ ...playlist, items: Array.isArray(playlist.items) ? playlist.items.map((item) => ({ ...item })) : [] })) : []
+  };
+
+  if (migrated.playlists.length > 0) {
+    return migrated;
+  }
+
+  migrated.playlists = migrated.screens.map((screenItem, index) => {
+    const dashboardsForScreen = migrated.dashboards
+      .filter((dashboardItem) => dashboardItem.screenId === screenItem.id)
+      .sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
+
+    const playlistId = createId('playlist', screenItem.name || screenItem.id, index);
+    screenItem.playlistId = playlistId;
+
+    return {
+      id: playlistId,
+      name: `${screenItem.name || `Screen ${index + 1}`} Playlist`,
+      description: 'Migrated from screen-assigned dashboards',
+      items: dashboardsForScreen.map((dashboardItem, itemIndex) => ({
+        id: createId('pli', `${dashboardItem.id}-${itemIndex + 1}`, itemIndex),
+        dashboardId: dashboardItem.id,
+        durationMs: Number(dashboardItem.durationMs || 30000),
+        zoomFactor: Number(dashboardItem.zoomFactor || 1),
+        scrollOffsetPx: Number(dashboardItem.scrollOffsetPx || 0),
+        settleMs: Number(dashboardItem.settleMs || 3000),
+        timeoutMs: Number(dashboardItem.timeoutMs || 20000),
+        enabled: dashboardItem.enabled !== false
+      }))
+    };
+  });
+
+  return migrated;
 }
 
 function mergeConfigWithDefaults(config) {
   const defaults = defaultConfig();
+  const migrated = migrateDashboardsToPlaylists(config || defaults);
 
   return {
     settings: {
       ...defaults.settings,
-      ...(config.settings || {})
+      ...(migrated.settings || {})
     },
-    screens: Array.isArray(config.screens) ? config.screens : defaults.screens,
-    dashboards: Array.isArray(config.dashboards) ? config.dashboards : defaults.dashboards
+    screens: Array.isArray(migrated.screens) ? migrated.screens : defaults.screens,
+    dashboards: Array.isArray(migrated.dashboards) ? migrated.dashboards : defaults.dashboards,
+    playlists: Array.isArray(migrated.playlists) ? migrated.playlists : defaults.playlists
   };
 }
 
@@ -683,6 +775,33 @@ function noteDashboardFailure(dashboard, reason) {
 }
 
 function getPlaylistForScreen(screenId) {
+  const screenItem = configCache.screens.find((screen) => screen.id === screenId);
+  const playlist = screenItem && screenItem.playlistId
+    ? (configCache.playlists || []).find((item) => item.id === screenItem.playlistId)
+    : null;
+
+  if (playlist && Array.isArray(playlist.items)) {
+    return playlist.items
+      .filter((item) => item.enabled !== false)
+      .map((item, index) => {
+        const dashboard = configCache.dashboards.find((candidate) => candidate.id === item.dashboardId);
+        if (!dashboard || dashboard.enabled === false || isDashboardCoolingDown(dashboard.id)) return null;
+        return {
+          ...dashboard,
+          playlistItemId: item.id || `${playlist.id}-${dashboard.id}-${index}`,
+          playlistId: playlist.id,
+          playlistName: playlist.name,
+          sequence: index + 1,
+          durationMs: Number(item.durationMs ?? dashboard.durationMs ?? 30000),
+          zoomFactor: Number(item.zoomFactor ?? dashboard.zoomFactor ?? dashboard.defaultZoomFactor ?? 1),
+          scrollOffsetPx: Number(item.scrollOffsetPx ?? dashboard.scrollOffsetPx ?? dashboard.defaultScrollOffsetPx ?? 0),
+          settleMs: Number(item.settleMs ?? dashboard.settleMs ?? 3000),
+          timeoutMs: Number(item.timeoutMs ?? dashboard.timeoutMs ?? 20000)
+        };
+      })
+      .filter(Boolean);
+  }
+
   return configCache.dashboards
     .filter((d) => d.enabled !== false && d.screenId === screenId)
     .filter((d) => !isDashboardCoolingDown(d.id))
@@ -1661,6 +1780,7 @@ function getAdminState() {
       totalItems: state.playlist ? state.playlist.length : 0,
       currentDashboard: current ? current.name : '',
       currentUrl: current ? current.url : '',
+      currentPlaylist: current ? current.playlistName || '' : '',
       snapshot: screenSnapshots.get(screenId) || null
     };
   });
@@ -1670,6 +1790,7 @@ function getAdminState() {
     startupEnabled: getStartupStatus(),
     settings: configCache.settings,
     screens: configCache.screens,
+    playlists: configCache.playlists || [],
     dashboards: configCache.dashboards,
     dashboardHealth: configCache.dashboards.map((dashboard) => {
       const info = getDashboardHealth(dashboard.id);
@@ -1905,6 +2026,20 @@ ipcMain.handle('preview-dashboard', async (_, dashboard) => {
     return result || { ok: true };
   } catch (err) {
     writeLog('preview', `Preview failed: ${err.message}`);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('update-preview-view', async (_, dashboard) => {
+  try {
+    if (!previewWindow || previewWindow.isDestroyed()) {
+      return { ok: false, error: 'Preview window is not open' };
+    }
+    const viewState = await applyDashboardView(previewWindow.webContents, dashboard, 'preview-live');
+    previewWindow.setTitle(`${APP_NAME} Offset Studio - ${dashboard.name || 'Dashboard'} (${viewState.scrollOffsetPx}px offset)`);
+    return { ok: true, previewDiagnostics: { scrollResult: viewState.scrollResult || null, pageMetrics: viewState.pageMetrics || null, zoomFactor: viewState.zoomFactor, scrollOffsetPx: viewState.scrollOffsetPx } };
+  } catch (err) {
+    writeLog('preview', `Live preview update failed: ${err.message}`);
     return { ok: false, error: err.message };
   }
 });

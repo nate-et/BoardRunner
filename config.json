@@ -11,13 +11,15 @@
       "id": "screen-1",
       "name": "Left Screen",
       "displayIndex": 0,
-      "enabled": true
+      "enabled": true,
+      "playlistId": "playlist-screen-1"
     },
     {
       "id": "screen-2",
       "name": "Right Screen",
       "displayIndex": 1,
-      "enabled": true
+      "enabled": true,
+      "playlistId": "playlist-screen-2"
     }
   ],
   "dashboards": [
@@ -31,7 +33,12 @@
       "zoomFactor": 0.9,
       "settleMs": 3000,
       "timeoutMs": 20000,
-      "enabled": true
+      "enabled": true,
+      "defaultZoomFactor": 0.9,
+      "defaultScrollOffsetPx": 0,
+      "tags": [
+        "Sample"
+      ]
     },
     {
       "id": "db-2",
@@ -43,7 +50,12 @@
       "zoomFactor": 0.85,
       "settleMs": 3000,
       "timeoutMs": 20000,
-      "enabled": true
+      "enabled": true,
+      "defaultZoomFactor": 0.85,
+      "defaultScrollOffsetPx": 0,
+      "tags": [
+        "Sample"
+      ]
     },
     {
       "id": "db-3",
@@ -55,7 +67,58 @@
       "zoomFactor": 1,
       "settleMs": 3000,
       "timeoutMs": 20000,
-      "enabled": true
+      "enabled": true,
+      "defaultZoomFactor": 1,
+      "defaultScrollOffsetPx": 0,
+      "tags": [
+        "Sample"
+      ]
+    }
+  ],
+  "playlists": [
+    {
+      "id": "playlist-screen-1",
+      "name": "Left Screen Playlist",
+      "description": "Sample migrated playlist",
+      "items": [
+        {
+          "id": "pli-db-1",
+          "dashboardId": "db-1",
+          "durationMs": 45000,
+          "zoomFactor": 0.9,
+          "scrollOffsetPx": 0,
+          "settleMs": 3000,
+          "timeoutMs": 20000,
+          "enabled": true
+        },
+        {
+          "id": "pli-db-2",
+          "dashboardId": "db-2",
+          "durationMs": 60000,
+          "zoomFactor": 0.85,
+          "scrollOffsetPx": 0,
+          "settleMs": 3000,
+          "timeoutMs": 20000,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": "playlist-screen-2",
+      "name": "Right Screen Playlist",
+      "description": "Sample migrated playlist",
+      "items": [
+        {
+          "id": "pli-db-3",
+          "dashboardId": "db-3",
+          "durationMs": 30000,
+          "zoomFactor": 1,
+          "scrollOffsetPx": 0,
+          "settleMs": 3000,
+          "timeoutMs": 20000,
+          "enabled": true
+        }
+      ]
     }
   ]
 }
