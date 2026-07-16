@@ -11,146 +11,234 @@
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">BR</div>
-        <div>
-          <h1>BoardRunner</h1>
-          <p>Wallboard Control Centre</p>
-        </div>
+        <h1>BoardRunner</h1>
+        <p>Admin Console</p>
+        <p class="brand-credit">Developed by Nathan Ersser</p>
       </div>
+
       <nav class="nav">
-        <button class="nav-btn active" data-view="home" type="button">Command Centre</button>
-        <button class="nav-btn" data-view="displays" type="button">Displays</button>
-        <button class="nav-btn" data-view="playlists" type="button">Playlists</button>
-        <button class="nav-btn" data-view="library" type="button">Dashboard Library</button>
-        <button class="nav-btn" data-view="studio" type="button">Offset Studio</button>
-        <button class="nav-btn" data-view="runtime" type="button">Runtime</button>
+        <button class="nav-btn active" data-view="overview" type="button">Overview</button>
+        <button class="nav-btn" data-view="screens" type="button">Screens</button>
+        <button class="nav-btn" data-view="dashboards" type="button">Dashboards</button>
         <button class="nav-btn" data-view="settings" type="button">Settings</button>
+        <button class="nav-btn" data-view="runtime" type="button">Runtime</button>
       </nav>
+
       <div class="sidebar-footer">
         <button id="btnSaveAll" class="primary full" type="button">Publish Changes</button>
         <button id="btnReload" class="full" type="button">Reload Screens</button>
         <button id="btnIdentify" class="full" type="button">Identify Displays</button>
         <button id="btnPauseResume" class="full" type="button">Pause Rotation</button>
+
         <div class="sidebar-divider"></div>
+
         <button id="btnCreateBackup" class="full" type="button">Backup Config</button>
         <button id="btnExportConfig" class="full" type="button">Export Config</button>
         <button id="btnImportConfig" class="full" type="button">Import Config</button>
-        <button id="btnOpenConfigFolder" class="full" type="button">Config Folder</button>
-        <button id="btnOpenLogs" class="full" type="button">Logs</button>
+        <button id="btnOpenConfigFolder" class="full" type="button">Open Config Folder</button>
+        <button id="btnOpenLogs" class="full" type="button">Open Logs</button>
       </div>
     </aside>
 
     <main class="main">
       <header class="topbar">
         <div>
-          <h2 id="pageTitle">Command Centre</h2>
-          <p id="pageSubtitle">Live wallboard estate, playlists and staged changes</p>
+          <h2 id="pageTitle">Overview</h2>
+          <p id="pageSubtitle">Quick summary of screens, dashboards and current playback</p>
         </div>
         <div class="status-strip">
           <span id="statusRotation" class="status-pill">Rotation: Running</span>
           <span id="statusStartup" class="status-pill">Startup: Off</span>
           <span id="statusKiosk" class="status-pill">Kiosk: On</span>
-          <span id="statusUnsaved" class="status-pill hidden">Unsaved changes</span>
         </div>
       </header>
+
       <section id="errorBanner" class="error-banner hidden"></section>
 
-      <section class="view active" id="view-home">
-        <div id="commandHero" class="hero-panel"></div>
-        <div id="homeScreenGrid" class="screen-grid"></div>
+      <section class="view active" id="view-overview">
+        <div class="cards-grid compact-cards">
+          <div class="overview-card">
+            <span class="overview-label">Configured Screens</span>
+            <strong id="ovConfiguredScreens">0</strong>
+          </div>
+          <div class="overview-card">
+            <span class="overview-label">Configured Dashboards</span>
+            <strong id="ovConfiguredDashboards">0</strong>
+          </div>
+          <div class="overview-card">
+            <span class="overview-label">Detected Displays</span>
+            <strong id="ovDetectedDisplays">0</strong>
+          </div>
+          <div class="overview-card">
+            <span class="overview-label">Live Runtime Screens</span>
+            <strong id="ovRuntimeScreens">0</strong>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Current Playback</h3>
+          </div>
+          <div id="overviewRuntimeCards" class="cards-grid"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Display Detection</h3>
+          </div>
+          <div id="overviewDisplays" class="display-map-grid"></div>
+        </div>
       </section>
 
-      <section class="view" id="view-displays">
+      <section class="view" id="view-screens">
         <div class="panel">
           <div class="panel-header">
             <div>
-              <h3>Displays</h3>
-              <p class="panel-subtitle">Assign screens and playlists visually. Preview thumbnails update after loads and reloads.</p>
+              <h3>Visual Display Mapping</h3>
+              <p class="panel-subtitle">Click a display card to edit the screen assigned to it, or create a new assignment.</p>
             </div>
             <button id="btnIdentifyFromMap" type="button">Identify Displays</button>
           </div>
-          <div id="displayGrid" class="display-map-grid"></div>
+          <div id="screenDisplayMap" class="display-map-grid"></div>
+        </div>
+
+        <div class="split-layout">
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Screens</h3>
+              <button id="btnAddScreen" type="button">Add Screen</button>
+            </div>
+            <div id="screensList" class="list-stack"></div>
+          </div>
+
+          <div class="panel" id="screenEditorPanel">
+            <div class="panel-header">
+              <div>
+                <h3 id="screenFormTitle">Add Screen</h3>
+                <p class="panel-subtitle" id="screenFormSubtitle">Create or update a screen mapping</p>
+              </div>
+            </div>
+
+            <form id="screenForm" class="editor-form">
+              <input type="hidden" id="screenId">
+
+              <label class="field">
+                <span>Screen Name</span>
+                <input type="text" id="screenName" placeholder="e.g. Operations" required>
+              </label>
+
+              <label class="field">
+                <span>Physical Display</span>
+                <select id="screenDisplayIndex"></select>
+              </label>
+
+              <label class="checkbox-row">
+                <input type="checkbox" id="screenEnabled" checked>
+                <span>Enabled</span>
+              </label>
+
+              <div class="form-actions sticky-actions">
+                <button type="submit" class="primary">Save Screen</button>
+                <button type="button" id="btnResetScreen">Clear</button>
+              </div>
+            </form>
+          </div>
         </div>
       </section>
 
-      <section class="view" id="view-playlists">
-        <div class="playlist-layout">
-          <div class="panel library-panel">
-            <div class="panel-header">
-              <div>
-                <h3>Dashboard Library</h3>
-                <p class="panel-subtitle">Drag dashboards into a playlist.</p>
-              </div>
-            </div>
-            <input id="librarySearch" class="search-input" type="text" placeholder="Search dashboards">
-            <div id="playlistLibrary" class="mini-library"></div>
-          </div>
-          <div class="panel builder-panel">
-            <div class="panel-header">
-              <div>
-                <h3>Playlist Builder</h3>
-                <p class="panel-subtitle">Create rotations, reorder with drag and apply to screens.</p>
-              </div>
-              <div class="toolbar-inline">
-                <select id="playlistSelect"></select>
-                <button id="btnAddPlaylist" type="button">New Playlist</button>
-              </div>
-            </div>
-            <div class="playlist-name-row">
-              <input id="playlistName" type="text" placeholder="Playlist name">
-              <button id="btnSavePlaylistName" type="button">Rename</button>
-              <button id="btnDuplicatePlaylist" type="button">Duplicate</button>
-            </div>
-            <div id="playlistDropZone" class="playlist-drop-zone"></div>
-            <div class="apply-row">
-              <select id="applyPlaylistScreen"></select>
-              <button id="btnApplyPlaylist" class="primary" type="button">Apply to Screen</button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="view" id="view-library">
+      <section class="view" id="view-dashboards">
         <div class="split-layout wide-right">
           <div class="panel">
             <div class="panel-header">
-              <div>
-                <h3>Dashboard Library</h3>
-                <p class="panel-subtitle">Reusable dashboard sources used by playlists.</p>
+              <h3>Dashboards</h3>
+              <div class="toolbar-inline">
+                <label class="inline-field">
+                  <span>Screen</span>
+                  <select id="dashboardFilterScreen"></select>
+                </label>
+                <button id="btnAddDashboard" type="button">Add Dashboard</button>
               </div>
-              <button id="btnAddDashboard" type="button">Add Dashboard</button>
             </div>
-            <div id="dashboardLibraryList" class="dashboard-library-list"></div>
+            <div id="dashboardsList" class="list-stack"></div>
           </div>
-          <div class="panel inspector-panel" id="dashboardEditorPanel">
+
+          <div class="panel" id="dashboardEditorPanel">
             <div class="panel-header">
               <div>
                 <h3 id="dashboardFormTitle">Add Dashboard</h3>
-                <p class="panel-subtitle" id="dashboardFormSubtitle">Create or update a dashboard source</p>
+                <p class="panel-subtitle" id="dashboardFormSubtitle">Create or update a dashboard entry</p>
               </div>
             </div>
+
             <form id="dashboardForm" class="editor-form">
               <input type="hidden" id="dashboardId">
-              <label class="field"><span>Name</span><input type="text" id="dashboardName" required></label>
-              <label class="field"><span>URL</span><input type="url" id="dashboardUrl" required></label>
+
+              <label class="field">
+                <span>Dashboard Name</span>
+                <input type="text" id="dashboardName" placeholder="e.g. SLA Board" required>
+              </label>
+
+              <label class="field">
+                <span>URL</span>
+                <input type="url" id="dashboardUrl" placeholder="https://..." required>
+              </label>
+
               <div class="form-grid two-col">
-                <label class="field"><span>Default Duration</span><input type="number" id="dashboardDurationSec" min="1" step="1" required></label>
-                <label class="field"><span>Default Zoom %</span><input type="number" id="dashboardZoomPercent" min="10" step="5" required></label>
+                <label class="field">
+                  <span>Screen</span>
+                  <select id="dashboardScreenId" required></select>
+                </label>
+
+                <label class="field">
+                  <span>Sequence</span>
+                  <input type="number" id="dashboardSequence" min="1" step="1" required>
+                </label>
               </div>
+
               <div class="form-grid two-col">
-                <label class="field"><span>Default Offset px</span><input type="number" id="dashboardScrollOffsetPx" min="0" step="10"></label>
-                <label class="field"><span>Tags</span><input type="text" id="dashboardTags" placeholder="Halo, Service Desk"></label>
+                <label class="field">
+                  <span>Duration (seconds)</span>
+                  <input type="number" id="dashboardDurationSec" min="1" step="1" required>
+                </label>
+
+                <label class="field">
+                  <span>Zoom (%)</span>
+                  <input type="number" id="dashboardZoomPercent" min="10" step="5" required>
+                </label>
               </div>
-              <details class="advanced-details"><summary>Advanced</summary>
+
+              <div class="form-grid two-col">
+                <label class="field">
+                  <span>Vertical Offset (px)</span>
+                  <input type="number" id="dashboardScrollOffsetPx" min="0" step="10" value="0">
+                </label>
+                <div></div>
+              </div>
+
+              <details class="advanced-details">
+                <summary>Advanced</summary>
+
                 <div class="form-grid two-col advanced-grid">
-                  <label class="field"><span>Settle ms</span><input type="number" id="dashboardSettleMs" min="0" step="500" required></label>
-                  <label class="field"><span>Timeout ms</span><input type="number" id="dashboardTimeoutMs" min="1000" step="1000" required></label>
+                  <label class="field">
+                    <span>Settle Delay (ms)</span>
+                    <input type="number" id="dashboardSettleMs" min="0" step="500" required>
+                  </label>
+
+                  <label class="field">
+                    <span>Timeout (ms)</span>
+                    <input type="number" id="dashboardTimeoutMs" min="1000" step="1000" required>
+                  </label>
                 </div>
               </details>
-              <label class="checkbox-row"><input type="checkbox" id="dashboardEnabled" checked><span>Enabled</span></label>
+
+              <label class="checkbox-row">
+                <input type="checkbox" id="dashboardEnabled" checked>
+                <span>Enabled</span>
+              </label>
+
               <div class="form-actions sticky-actions">
                 <button type="submit" class="primary">Save Dashboard</button>
-                <button type="button" id="btnPreviewDashboard">Preview</button>
+                <button type="button" id="btnPreviewDashboard">Preview Offset</button>
                 <button type="button" id="btnResetDashboard">Clear</button>
               </div>
             </form>
@@ -158,61 +246,68 @@
         </div>
       </section>
 
-      <section class="view" id="view-studio">
-        <div class="studio-layout">
-          <div class="panel studio-panel">
-            <div class="panel-header">
-              <div>
-                <h3>Offset Studio</h3>
-                <p class="panel-subtitle">Preview dashboards and tune zoom/offset in real time.</p>
-              </div>
-              <button id="btnStudioOpenPreview" class="primary" type="button">Open Preview</button>
-            </div>
-            <label class="field"><span>Dashboard</span><select id="studioDashboardSelect"></select></label>
-            <div class="studio-controls">
-              <label class="range-field"><span>Vertical Offset</span><input type="range" id="studioOffsetRange" min="0" max="3000" step="10"><input type="number" id="studioOffsetNumber" min="0" step="10"></label>
-              <label class="range-field"><span>Zoom</span><input type="range" id="studioZoomRange" min="50" max="200" step="5"><input type="number" id="studioZoomNumber" min="10" step="5"></label>
-            </div>
-            <div class="quick-actions">
-              <button type="button" data-offset-nudge="-100">-100</button>
-              <button type="button" data-offset-nudge="-10">-10</button>
-              <button type="button" data-offset-nudge="10">+10</button>
-              <button type="button" data-offset-nudge="100">+100</button>
-              <button type="button" id="btnStudioReset">Reset</button>
-              <button type="button" id="btnStudioApplyDefault" class="primary">Apply as Default</button>
-            </div>
-            <div id="studioDiagnostics" class="diagnostics-card"></div>
+      <section class="view" id="view-settings">
+        <div class="panel settings-panel">
+          <div class="panel-header">
+            <h3>Application Settings</h3>
           </div>
-          <div class="panel studio-help">
-            <h3>Real-time workflow</h3>
-            <p>Open a preview, move the sliders, then apply the selected values as the dashboard default. Playlist items can still override defaults in the playlist builder.</p>
+
+          <div class="settings-grid">
+            <label class="toggle-card">
+              <div>
+                <strong>Kiosk Mode</strong>
+                <p>Fullscreen frameless wallboard windows</p>
+              </div>
+              <input type="checkbox" id="settingKioskMode">
+            </label>
+
+            <label class="toggle-card">
+              <div>
+                <strong>Tray-Only Startup</strong>
+                <p>Do not show the admin window on launch</p>
+              </div>
+              <input type="checkbox" id="settingTrayOnlyStartup">
+            </label>
+
+            <label class="toggle-card">
+              <div>
+                <strong>Hide Admin to Tray</strong>
+                <p>Closing the admin window hides it instead of exiting</p>
+              </div>
+              <input type="checkbox" id="settingHideAdminToTray">
+            </label>
+
+            <label class="toggle-card">
+              <div>
+                <strong>Start with Windows</strong>
+                <p>Launch the app automatically at sign-in</p>
+              </div>
+              <input type="checkbox" id="settingStartWithWindows">
+            </label>
+          </div>
+
+          <div class="settings-inline">
+            <label class="field small-field">
+              <span>Identify Overlay Seconds</span>
+              <input type="number" id="settingIdentifyOverlaySeconds" min="1" step="1">
+            </label>
           </div>
         </div>
       </section>
 
       <section class="view" id="view-runtime">
         <div class="panel">
-          <div class="panel-header"><h3>Runtime</h3></div>
-          <div id="runtimeCards" class="runtime-grid"></div>
-        </div>
-      </section>
-
-      <section class="view" id="view-settings">
-        <div class="panel settings-panel">
-          <div class="panel-header"><h3>Settings</h3></div>
-          <div class="settings-grid">
-            <label class="toggle-card"><div><strong>Kiosk Mode</strong><p>Fullscreen wallboard windows</p></div><input type="checkbox" id="settingKioskMode"></label>
-            <label class="toggle-card"><div><strong>Tray-Only Startup</strong><p>Launch silently</p></div><input type="checkbox" id="settingTrayOnlyStartup"></label>
-            <label class="toggle-card"><div><strong>Hide Admin to Tray</strong><p>Close hides admin only</p></div><input type="checkbox" id="settingHideAdminToTray"></label>
-            <label class="toggle-card"><div><strong>Start with Windows</strong><p>Launch at sign in</p></div><input type="checkbox" id="settingStartWithWindows"></label>
+          <div class="panel-header">
+            <h3>Runtime State</h3>
           </div>
-          <div class="settings-inline"><label class="field small-field"><span>Identify Overlay Seconds</span><input type="number" id="settingIdentifyOverlaySeconds" min="1" step="1"></label></div>
+          <div id="runtimeCards" class="cards-grid"></div>
         </div>
       </section>
     </main>
   </div>
-  <div id="drawerBackdrop" class="drawer-backdrop hidden"></div>
-  <aside id="sideDrawer" class="side-drawer hidden"></aside>
+
+  <div id="toastContainer" class="toast-container"></div>
+
   <script src="admin.js"></script>
 </body>
 </html>
