@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('wallboardApi', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   getState: () => ipcRenderer.invoke('get-state'),
   getDetectedDisplays: () => ipcRenderer.invoke('get-detected-displays'),
+  getDiagnostics: () => ipcRenderer.invoke('get-diagnostics'),
 
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   reloadScreens: () => ipcRenderer.invoke('reload-screens'),

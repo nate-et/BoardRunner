@@ -1,15 +1,14 @@
 {
-  "name": "wallboard-launcher",
-  "version": "2.4.0",
-  "description": "BoardRunner - wallboard display management application for rotating live dashboards across multiple screens",
+  "name": "boardrunner",
+  "version": "2.5.0",
+  "description": "BoardRunner - enterprise wallboard display management for rotating live dashboards across multiple screens",
   "main": "main.js",
   "private": true,
-  "author": {
-    "name": "Nathan Ersser"
-  },
+  "author": { "name": "Nathan Ersser" },
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win nsis",
+    "dist:installer": "electron-builder --win nsis",
     "dist:portable": "set ELECTRON_BUILDER_CACHE=.cache\\electron-builder && electron-builder --win portable"
   },
   "devDependencies": {
@@ -20,31 +19,22 @@
     "appId": "com.extech.boardrunner",
     "productName": "BoardRunner",
     "copyright": "Copyright © 2026 Nathan Ersser",
-    "directories": {
-      "buildResources": "assets"
-    },
-    "files": [
-      "main.js",
-      "preload.js",
-      "admin.html",
-      "admin.css",
-      "admin.js",
-      "config.json",
-      "assets/**/*"
-    ],
+    "directories": { "buildResources": "assets" },
+    "files": ["main.js", "preload.js", "admin.html", "admin.css", "admin.js", "config.json", "assets/**/*"],
     "win": {
       "icon": "assets/icon.ico",
-      "target": [
-        "portable",
-        "nsis"
-      ]
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "perMachine": true,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "BoardRunner"
+      "shortcutName": "BoardRunner",
+      "artifactName": "BoardRunner-Setup-${version}.${ext}",
+      "deleteAppDataOnUninstall": false
     }
   }
 }
