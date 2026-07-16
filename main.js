@@ -31,6 +31,7 @@ let configCache = null;
 let rotationPaused = false;
 let displayWindows = new Map();
 let runtimeState = new Map();
+let screenSnapshots = new Map();
 let identifyWindows = [];
 let quitting = false;
 
@@ -75,7 +76,9 @@ function defaultConfig() {
       maxConsecutiveFailures: 3,
       dashboardCooldownMinutes: 10,
       restartOnResume: true,
-      restartOnDisplayChange: true
+      restartOnDisplayChange: true,
+      stagedPublishEnabled: true,
+      applyMode: 'next-rotation'
     },
     playlists: [],
     screens: [
@@ -133,6 +136,9 @@ function validateConfig(config) {
   if (!Array.isArray(config.dashboards)) {
     throw new Error('Config must contain dashboards array');
   }
+  if (config.playlists !== undefined && !Array.isArray(config.playlists)) {
+    throw new Error('Config playlists must be an array');
+  }
 
   const screenIds = new Set();
 
@@ -169,7 +175,7 @@ function validateConfig(config) {
       throw new Error(`Dashboard ${db.name} is missing URL`);
     }
 
-    if (!db.screenId || !screenIds.has(db.screenId)) {
+    if (db.screenId && !screenIds.has(db.screenId)) {
       throw new Error(`Dashboard ${db.name} references an invalid screen`);
     }
 
@@ -189,18 +195,104 @@ function validateConfig(config) {
       throw new Error(`Dashboard ${db.name} has invalid scrollOffsetPx`);
     }
   }
+
+  const dashboardIds = new Set(config.dashboards.map((db) => db.id));
+  const playlistIds = new Set();
+
+  for (const [i, playlist] of (config.playlists || []).entries()) {
+    if (!playlist.id || typeof playlist.id !== 'string') {
+      throw new Error(`Playlist ${i + 1} is missing id`);
+    }
+    if (!playlist.name || typeof playlist.name !== 'string') {
+      throw new Error(`Playlist ${i + 1} is missing name`);
+    }
+    if (playlistIds.has(playlist.id)) {
+      throw new Error(`Duplicate playlist id: ${playlist.id}`);
+    }
+    playlistIds.add(playlist.id);
+    if (!Array.isArray(playlist.items)) {
+      throw new Error(`Playlist ${playlist.name} must contain items array`);
+    }
+    for (const [itemIndex, item] of playlist.items.entries()) {
+      if (!item.dashboardId || !dashboardIds.has(item.dashboardId)) {
+        throw new Error(`Playlist ${playlist.name} item ${itemIndex + 1} references an invalid dashboard`);
+      }
+      if (Number(item.durationMs || 0) <= 0) {
+        throw new Error(`Playlist ${playlist.name} item ${itemIndex + 1} has invalid durationMs`);
+      }
+    }
+  }
+
+  for (const scr of config.screens) {
+    if (scr.playlistId && !playlistIds.has(scr.playlistId)) {
+      throw new Error(`Screen ${scr.name} references an invalid playlist`);
+    }
+  }
+}
+
+
+function createId(prefix, source, index = 0) {
+  const safe = String(source || `${prefix}-${index + 1}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || `${prefix}-${index + 1}`;
+  return `${prefix}-${safe}`;
+}
+
+function migrateDashboardsToPlaylists(config) {
+  const migrated = {
+    ...config,
+    settings: { ...(config.settings || {}) },
+    screens: Array.isArray(config.screens) ? config.screens.map((screenItem) => ({ ...screenItem })) : [],
+    dashboards: Array.isArray(config.dashboards) ? config.dashboards.map((dashboardItem) => ({ ...dashboardItem })) : [],
+    playlists: Array.isArray(config.playlists) ? config.playlists.map((playlist) => ({ ...playlist, items: Array.isArray(playlist.items) ? playlist.items.map((item) => ({ ...item })) : [] })) : []
+  };
+
+  if (migrated.playlists.length > 0) {
+    return migrated;
+  }
+
+  migrated.playlists = migrated.screens.map((screenItem, index) => {
+    const dashboardsForScreen = migrated.dashboards
+      .filter((dashboardItem) => dashboardItem.screenId === screenItem.id)
+      .sort((a, b) => Number(a.sequence || 0) - Number(b.sequence || 0));
+
+    const playlistId = createId('playlist', screenItem.name || screenItem.id, index);
+    screenItem.playlistId = playlistId;
+
+    return {
+      id: playlistId,
+      name: `${screenItem.name || `Screen ${index + 1}`} Playlist`,
+      description: 'Migrated from screen-assigned dashboards',
+      items: dashboardsForScreen.map((dashboardItem, itemIndex) => ({
+        id: createId('pli', `${dashboardItem.id}-${itemIndex + 1}`, itemIndex),
+        dashboardId: dashboardItem.id,
+        durationMs: Number(dashboardItem.durationMs || 30000),
+        zoomFactor: Number(dashboardItem.zoomFactor || 1),
+        scrollOffsetPx: Number(dashboardItem.scrollOffsetPx || 0),
+        settleMs: Number(dashboardItem.settleMs || 3000),
+        timeoutMs: Number(dashboardItem.timeoutMs || 20000),
+        enabled: dashboardItem.enabled !== false
+      }))
+    };
+  });
+
+  return migrated;
 }
 
 function mergeConfigWithDefaults(config) {
   const defaults = defaultConfig();
+  const migrated = migrateDashboardsToPlaylists(config || defaults);
 
   return {
     settings: {
       ...defaults.settings,
-      ...(config.settings || {})
+      ...(migrated.settings || {})
     },
-    screens: Array.isArray(config.screens) ? config.screens : defaults.screens,
-    dashboards: Array.isArray(config.dashboards) ? config.dashboards : defaults.dashboards
+    screens: Array.isArray(migrated.screens) ? migrated.screens : defaults.screens,
+    dashboards: Array.isArray(migrated.dashboards) ? migrated.dashboards : defaults.dashboards,
+    playlists: Array.isArray(migrated.playlists) ? migrated.playlists : defaults.playlists
   };
 }
 
@@ -560,6 +652,38 @@ function createPreviewWindow() {
   return previewWindow;
 }
 
+
+async function captureScreenSnapshot(screenId) {
+  try {
+    const win = displayWindows.get(screenId);
+    if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return null;
+
+    const image = await win.webContents.capturePage();
+    const resized = image.resize({ width: 640, quality: 'good' });
+    const dataUrl = resized.toDataURL();
+    const snapshot = {
+      screenId,
+      capturedAt: new Date().toISOString(),
+      dataUrl
+    };
+
+    screenSnapshots.set(screenId, snapshot);
+    notifyAdminState();
+    return snapshot;
+  } catch (err) {
+    writeLog('snapshot', `Failed to capture ${screenId}: ${err.message}`);
+    return null;
+  }
+}
+
+function scheduleScreenSnapshot(screenId, delayMs = 1000) {
+  setTimeout(() => {
+    captureScreenSnapshot(screenId).catch((err) => {
+      writeLog('snapshot', `Snapshot schedule failed for ${screenId}: ${err.message}`);
+    });
+  }, delayMs);
+}
+
 function clearTimers(screenId) {
   const state = runtimeState.get(screenId);
   if (!state) return;
@@ -575,7 +699,11 @@ function getDashboardHealth(dashboardId) {
   if (!dashboardHealth.has(dashboardId)) {
     dashboardHealth.set(dashboardId, {
       failures: 0,
-      cooldownUntil: null
+      cooldownUntil: null,
+      lastStatus: 'unknown',
+      lastError: null,
+      lastCheckedAt: null,
+      history: []
     });
   }
 
@@ -587,7 +715,32 @@ function isDashboardCoolingDown(dashboardId) {
   return !!(info.cooldownUntil && info.cooldownUntil > Date.now());
 }
 
-function noteDashboardSuccess(dashboardId) {
+function recordDashboardHealthEvent(dashboardId, status, detail = {}) {
+  const info = getDashboardHealth(dashboardId);
+  const event = {
+    status,
+    at: new Date().toISOString(),
+    dashboardId,
+    dashboardName: detail.dashboardName || '',
+    screenId: detail.screenId || '',
+    screenName: detail.screenName || '',
+    url: detail.url || '',
+    reason: detail.reason || '',
+    loadMs: detail.loadMs || null,
+    offsetRequested: detail.offsetRequested ?? null,
+    offsetApplied: detail.offsetApplied ?? null,
+    offsetTarget: detail.offsetTarget || '',
+    pageHeight: detail.pageHeight ?? null,
+    viewportHeight: detail.viewportHeight ?? null
+  };
+  info.lastStatus = status;
+  info.lastError = status === 'ok' ? null : event.reason;
+  info.lastCheckedAt = event.at;
+  info.history = [event, ...(info.history || [])].slice(0, 10);
+  return event;
+}
+
+function noteDashboardSuccess(dashboardId, detail = {}) {
   const info = getDashboardHealth(dashboardId);
 
   if (info.failures > 0 || info.cooldownUntil) {
@@ -622,6 +775,39 @@ function noteDashboardFailure(dashboard, reason) {
 }
 
 function getPlaylistForScreen(screenId) {
+  const screenItem = configCache.screens.find((screen) => screen.id === screenId);
+  const playlist = screenItem && screenItem.playlistId
+    ? (configCache.playlists || []).find((item) => item.id === screenItem.playlistId)
+    : null;
+
+  if (playlist && Array.isArray(playlist.items) && playlist.items.length > 0) {
+    const playlistDashboards = playlist.items
+      .filter((item) => item.enabled !== false)
+      .map((item, index) => {
+        const dashboard = configCache.dashboards.find((candidate) => candidate.id === item.dashboardId);
+        if (!dashboard || dashboard.enabled === false || isDashboardCoolingDown(dashboard.id)) return null;
+        return {
+          ...dashboard,
+          playlistItemId: item.id || `${playlist.id}-${dashboard.id}-${index}`,
+          playlistId: playlist.id,
+          playlistName: playlist.name,
+          sequence: index + 1,
+          durationMs: Number(item.durationMs ?? dashboard.durationMs ?? 30000),
+          zoomFactor: Number(item.zoomFactor ?? dashboard.zoomFactor ?? dashboard.defaultZoomFactor ?? 1),
+          scrollOffsetPx: Number(item.scrollOffsetPx ?? dashboard.scrollOffsetPx ?? dashboard.defaultScrollOffsetPx ?? 0),
+          settleMs: Number(item.settleMs ?? dashboard.settleMs ?? 3000),
+          timeoutMs: Number(item.timeoutMs ?? dashboard.timeoutMs ?? 20000)
+        };
+      })
+      .filter(Boolean);
+
+    if (playlistDashboards.length > 0) {
+      return playlistDashboards;
+    }
+
+    writeLog('playlist', `Playlist ${playlist.name} produced no playable dashboards for ${screenId}; falling back to legacy screen assignments`);
+  }
+
   return configCache.dashboards
     .filter((d) => d.enabled !== false && d.screenId === screenId)
     .filter((d) => !isDashboardCoolingDown(d.id))
@@ -1154,6 +1340,7 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
         })();
       `, true);
 
+      scrollResult = result || scrollResult;
       writeLog(
         logPrefix,
         `Scroll offset result: requested=${result.requestedOffset}px applied=${result.appliedOffset}px max=${result.maxOffset}px target=${result.target} before=${result.before} after=${result.after}`
@@ -1234,7 +1421,18 @@ async function loadDashboardIntoWindow(screenId) {
       wc.removeListener('did-fail-load', onDidFailLoad);
 
       const viewState = await applyDashboardView(wc, current, screenId);
-      noteDashboardSuccess(current.id);
+      noteDashboardSuccess(current.id, {
+        dashboardName: current.name,
+        screenId,
+        screenName: state.screen ? state.screen.name : '',
+        url: current.url,
+        loadMs: Date.now() - loadStartedMs,
+        offsetRequested: Number(current.scrollOffsetPx || 0),
+        offsetApplied: viewState.scrollResult ? viewState.scrollResult.appliedOffset : null,
+        offsetTarget: viewState.scrollResult ? viewState.scrollResult.target : '',
+        pageHeight: viewState.pageMetrics ? viewState.pageMetrics.pageHeight : null,
+        viewportHeight: viewState.pageMetrics ? viewState.pageMetrics.viewportHeight : null
+      });
 
       writeLog(
         screenId,
@@ -1242,6 +1440,8 @@ async function loadDashboardIntoWindow(screenId) {
       );
 
       scheduleNext(screenId, durationMs + settleMs);
+      scheduleScreenSnapshot(screenId, 600);
+      scheduleScreenSnapshot(screenId, 3000);
       notifyAdminState();
     } catch (err) {
       noteDashboardFailure(current, `post-load:${err.message}`);
@@ -1387,6 +1587,7 @@ function startConfiguredScreens() {
     });
 
     loadDashboardIntoWindow(key);
+    scheduleScreenSnapshot(key, 6000);
   }
 
   notifyAdminState();
@@ -1473,6 +1674,67 @@ function identifyDisplays() {
   writeLog('display', 'Identify displays triggered');
 }
 
+
+function identifySingleDisplay(displayIndex) {
+  closeIdentifyWindows();
+  const seconds = Number(getSetting('identifyOverlaySeconds', 4)) || 4;
+  const displays = getDetectedDisplays();
+  const display = displays.find((item) => Number(item.index) === Number(displayIndex));
+
+  if (!display) {
+    writeLog('display', `Identify single display failed: display ${displayIndex} not found`);
+    return false;
+  }
+
+  const overlay = new BrowserWindow({
+    x: display.bounds.x,
+    y: display.bounds.y,
+    width: display.bounds.width,
+    height: display.bounds.height,
+    frame: false,
+    fullscreen: true,
+    resizable: false,
+    movable: false,
+    focusable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    backgroundColor: '#000000',
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true
+    }
+  });
+
+  const html = `
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        html, body { margin:0; width:100%; height:100%; background:rgba(0,0,0,.92); color:#fff; font-family:Segoe UI, Arial, sans-serif; display:flex; align-items:center; justify-content:center; }
+        .box { text-align:center; border:4px solid #627cff; border-radius:34px; padding:48px 84px; background:#202124; box-shadow:0 0 50px rgba(0,0,0,.48); }
+        .label { font-size:96px; font-weight:800; margin-bottom:18px; }
+        .meta { font-size:34px; color:#dbeafe; }
+      </style>
+    </head>
+    <body>
+      <div class="box">
+        <div class="label">${display.label}</div>
+        <div class="meta">${display.size}${display.primary ? ' • Primary' : ''}</div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  overlay.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  overlay.once('ready-to-show', () => overlay.showInactive());
+  identifyWindows.push(overlay);
+  setTimeout(closeIdentifyWindows, seconds * 1000);
+  writeLog('display', `Identify single display triggered: ${display.label}`);
+  return true;
+}
+
 function closeIdentifyWindows() {
   for (const win of identifyWindows) {
     if (win && !win.isDestroyed()) {
@@ -1518,8 +1780,35 @@ async function previewDashboard(dashboard) {
       try {
         const viewState = await applyDashboardView(win.webContents, dashboard, 'preview');
         win.setTitle(`${APP_NAME} Preview - ${dashboard.name || 'Dashboard'} (${viewState.scrollOffsetPx}px offset)`);
+        if (dashboard.id) {
+          recordDashboardHealthEvent(dashboard.id, 'ok', {
+            dashboardName: dashboard.name || '',
+            screenId: 'preview',
+            screenName: 'Preview',
+            url: dashboard.url,
+            reason: 'preview',
+            offsetRequested: Number(dashboard.scrollOffsetPx || 0),
+            offsetApplied: viewState.scrollResult ? viewState.scrollResult.appliedOffset : null,
+            offsetTarget: viewState.scrollResult ? viewState.scrollResult.target : '',
+            pageHeight: viewState.pageMetrics ? viewState.pageMetrics.pageHeight : null,
+            viewportHeight: viewState.pageMetrics ? viewState.pageMetrics.viewportHeight : null
+          });
+        }
         writeLog('preview', `Preview loaded: ${dashboard.name || dashboard.url}`);
-        finish({ ok: true });
+        finish({
+          ok: true,
+          previewDiagnostics: {
+            dashboardId: dashboard.id || '',
+            dashboardName: dashboard.name || '',
+            url: dashboard.url,
+            zoomFactor: viewState.zoomFactor,
+            scrollOffsetPx: viewState.scrollOffsetPx,
+            sampledBackgroundColor: viewState.sampledBackgroundColor || null,
+            scrollResult: viewState.scrollResult || null,
+            pageMetrics: viewState.pageMetrics || null,
+            loadedAt: new Date().toISOString()
+          }
+        });
       } catch (err) {
         fail(`Preview post-load failed: ${err.message}`);
       }
@@ -1558,7 +1847,9 @@ function getAdminState() {
       currentIndex: state.index,
       totalItems: state.playlist ? state.playlist.length : 0,
       currentDashboard: current ? current.name : '',
-      currentUrl: current ? current.url : ''
+      currentUrl: current ? current.url : '',
+      currentPlaylist: current ? current.playlistName || '' : '',
+      snapshot: screenSnapshots.get(screenId) || null
     };
   });
 
@@ -1655,6 +1946,10 @@ ipcMain.handle('get-config', async () => configCache);
 ipcMain.handle('get-state', async () => getAdminState());
 
 ipcMain.handle('get-detected-displays', async () => getDetectedDisplays());
+
+ipcMain.handle('capture-screen-snapshot', async (_, screenId) => {
+  return await captureScreenSnapshot(screenId);
+});
 
 ipcMain.handle('open-config-folder', async () => {
   ensureDir(USER_DATA);
@@ -1759,7 +2054,7 @@ ipcMain.handle('save-config', async (_, config) => {
 });
 
 ipcMain.handle('reload-screens', async () => {
-  reloadCurrentScreens();
+  startConfiguredScreens();
   return { ok: true };
 });
 
@@ -1795,10 +2090,24 @@ ipcMain.handle('show-admin', async () => {
 
 ipcMain.handle('preview-dashboard', async (_, dashboard) => {
   try {
-    await previewDashboard(dashboard);
-    return { ok: true };
+    const result = await previewDashboard(dashboard);
+    return result || { ok: true };
   } catch (err) {
     writeLog('preview', `Preview failed: ${err.message}`);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('update-preview-view', async (_, dashboard) => {
+  try {
+    if (!previewWindow || previewWindow.isDestroyed()) {
+      return { ok: false, error: 'Preview window is not open' };
+    }
+    const viewState = await applyDashboardView(previewWindow.webContents, dashboard, 'preview-live');
+    previewWindow.setTitle(`${APP_NAME} Offset Studio - ${dashboard.name || 'Dashboard'} (${viewState.scrollOffsetPx}px offset)`);
+    return { ok: true, previewDiagnostics: { scrollResult: viewState.scrollResult || null, pageMetrics: viewState.pageMetrics || null, zoomFactor: viewState.zoomFactor, scrollOffsetPx: viewState.scrollOffsetPx } };
+  } catch (err) {
+    writeLog('preview', `Live preview update failed: ${err.message}`);
     return { ok: false, error: err.message };
   }
 });
