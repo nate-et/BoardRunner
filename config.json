@@ -4,7 +4,16 @@
     "trayOnlyStartup": true,
     "hideAdminToTray": true,
     "startWithWindows": false,
-    "identifyOverlaySeconds": 4
+    "identifyOverlaySeconds": 4,
+    "autoUpdateEnabled": true,
+    "autoUpdateCheckOnStartup": true,
+    "autoUpdateCheckIntervalMinutes": 60,
+    "autoUpdateOwner": "nate-et",
+    "autoUpdateRepo": "BoardRunner",
+    "autoUpdateAllowPrerelease": false,
+    "autoUpdateAutoDownload": true,
+    "autoUpdateInstallAutomatically": true,
+    "autoUpdateInstallHourLocal": 3
   },
   "screens": [
     {

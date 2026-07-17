@@ -19,6 +19,7 @@ const els = {
   statusStartup: document.getElementById('statusStartup'),
   statusKiosk: document.getElementById('statusKiosk'),
   statusUnsaved: document.getElementById('statusUnsaved'),
+  statusUpdate: document.getElementById('statusUpdate'),
   navButtons: Array.from(document.querySelectorAll('.nav-btn')),
   views: Array.from(document.querySelectorAll('.view')),
   btnSaveAll: document.getElementById('btnSaveAll'),
@@ -31,6 +32,8 @@ const els = {
   btnImportConfig: document.getElementById('btnImportConfig'),
   btnOpenConfigFolder: document.getElementById('btnOpenConfigFolder'),
   btnOpenLogs: document.getElementById('btnOpenLogs'),
+  btnCheckUpdates: document.getElementById('btnCheckUpdates'),
+  btnInstallUpdate: document.getElementById('btnInstallUpdate'),
   commandHero: document.getElementById('commandHero'),
   homeScreenGrid: document.getElementById('homeScreenGrid'),
   displayGrid: document.getElementById('displayGrid'),
@@ -209,7 +212,6 @@ function renderSnapshot(runtimeItem, label = 'Screen') {
 function getRuntimeLayoutSignature(state = appState) {
   const runtime = Array.isArray(state?.runtimeScreens) ? state.runtimeScreens : [];
   const displays = Array.isArray(state?.detectedDisplays) ? state.detectedDisplays : [];
-
   return JSON.stringify({
     displays: displays.map((item) => [item.index, item.id, item.size, item.primary]),
     runtime: runtime.map((item) => [
@@ -227,51 +229,34 @@ function getRuntimeLayoutSignature(state = appState) {
 
 function getHealthSignature(state = appState) {
   const health = Array.isArray(state?.dashboardHealth) ? state.dashboardHealth : [];
-  return JSON.stringify(health.map((item) => [
-    item.dashboardId,
-    item.lastStatus,
-    item.lastError,
-    item.cooldownUntil
-  ]));
+  return JSON.stringify(health.map((item) => [item.dashboardId, item.lastStatus, item.lastError, item.cooldownUntil]));
 }
 
 function updateLiveSnapshotsOnly(state = appState) {
   const runtime = Array.isArray(state?.runtimeScreens) ? state.runtimeScreens : [];
-
   runtime.forEach((item) => {
     if (!item || !item.screenId || !item.snapshot || !item.snapshot.dataUrl) return;
-
     const nodes = Array.from(document.querySelectorAll('[data-snapshot-screen]'))
       .filter((node) => node.getAttribute('data-snapshot-screen') === item.screenId);
-
     nodes.forEach((node) => {
       const capturedAt = item.snapshot.capturedAt || '';
       if (node.getAttribute('data-snapshot-at') === capturedAt) return;
-
       node.classList.remove('empty');
       node.classList.add('is-live');
       node.setAttribute('data-snapshot-at', capturedAt);
-
       let img = node.querySelector('img');
       let label = node.querySelector('span');
-
       if (!img) {
         node.innerHTML = '<img alt="Live preview"><span></span>';
         img = node.querySelector('img');
         label = node.querySelector('span');
       }
-
       if (img && img.getAttribute('src') !== item.snapshot.dataUrl) {
         img.style.opacity = '0.35';
-        img.onload = () => {
-          img.style.opacity = '1';
-        };
+        img.onload = () => { img.style.opacity = '1'; };
         img.src = item.snapshot.dataUrl;
       }
-
-      if (label) {
-        label.textContent = `Live snapshot · ${formatTime(capturedAt)}`;
-      }
+      if (label) label.textContent = `Live snapshot · ${formatTime(capturedAt)}`;
     });
   });
 }
@@ -282,6 +267,20 @@ function renderStatusStrip() {
   if (els.statusStartup) els.statusStartup.textContent = `Startup: ${settings.startWithWindows ? 'On' : 'Off'}`;
   if (els.statusKiosk) els.statusKiosk.textContent = `Kiosk: ${settings.kioskMode ? 'On' : 'Off'}`;
   if (els.btnPauseResume) els.btnPauseResume.textContent = appState && appState.rotationPaused ? 'Resume Rotation' : 'Pause Rotation';
+}
+
+
+function renderUpdateStatus() {
+  const update = appState && appState.updateState ? appState.updateState : { status: 'idle' };
+  if (els.statusUpdate) {
+    const version = update.availableVersion ? ` ${update.availableVersion}` : '';
+    const progress = update.progress !== undefined && update.status === 'downloading' ? ` ${update.progress}%` : '';
+    const suffix = update.downloaded ? ' ready' : '';
+    els.statusUpdate.textContent = `Update: ${update.status || 'idle'}${version}${progress}${suffix}`;
+  }
+  if (els.btnInstallUpdate) {
+    els.btnInstallUpdate.classList.toggle('hidden', !(update && update.downloaded));
+  }
 }
 
 function renderHome() {
@@ -487,6 +486,7 @@ function getStudioDashboardModel() {
 function renderAll() {
   normaliseConfig();
   renderStatusStrip();
+  renderUpdateStatus();
   renderHome();
   renderDisplays();
   renderPlaylistBuilder();
@@ -662,6 +662,16 @@ function bindEvents() {
   els.btnImportConfig?.addEventListener('click', async () => { const r = await window.wallboardApi.importConfig(); if (!r.cancelled) { if (!r.ok) showFailure(r.error); else { configModel = deepClone(await window.wallboardApi.getConfig()); appState = await window.wallboardApi.getState(); renderAll(); showSuccess('Config imported.'); } } });
   els.btnOpenConfigFolder?.addEventListener('click', () => window.wallboardApi.openConfigFolder());
   els.btnOpenLogs?.addEventListener('click', () => window.wallboardApi.openLogFolder());
+  els.btnCheckUpdates?.addEventListener('click', async () => {
+    if (!window.wallboardApi.checkForUpdates) return showFailure('Updater API unavailable.');
+    const result = await window.wallboardApi.checkForUpdates();
+    result && result.ok === false ? showFailure(result.error || 'Update check failed.') : showSuccess('Update check started.');
+  });
+  els.btnInstallUpdate?.addEventListener('click', async () => {
+    if (!window.wallboardApi.installDownloadedUpdate) return showFailure('Updater API unavailable.');
+    const result = await window.wallboardApi.installDownloadedUpdate();
+    if (result && result.ok === false) showFailure(result.error || 'No downloaded update is ready.');
+  });
   els.displayGrid?.addEventListener('click', async (e) => {
     const identify = e.target.closest('[data-display-identify]');
     if (identify) {
@@ -739,10 +749,9 @@ function bindEvents() {
     const nextHealthSignature = getHealthSignature(state);
     const layoutChanged = nextLayoutSignature !== lastRuntimeLayoutSignature;
     const healthChanged = nextHealthSignature !== lastHealthSignature;
-
     appState = state;
     renderStatusStrip();
-
+    renderUpdateStatus();
     if (layoutChanged) {
       lastRuntimeLayoutSignature = nextLayoutSignature;
       renderHome();
@@ -751,7 +760,6 @@ function bindEvents() {
     } else {
       updateLiveSnapshotsOnly(state);
     }
-
     if (healthChanged) {
       lastHealthSignature = nextHealthSignature;
       renderDashboardLibrary();

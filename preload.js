@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('wallboardApi', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   getState: () => ipcRenderer.invoke('get-state'),
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  installDownloadedUpdate: () => ipcRenderer.invoke('install-downloaded-update'),
   getDetectedDisplays: () => ipcRenderer.invoke('get-detected-displays'),
   captureScreenSnapshot: (screenId) => ipcRenderer.invoke('capture-screen-snapshot', screenId),
 

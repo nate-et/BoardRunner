@@ -13,6 +13,12 @@ const {
 
 const path = require('path');
 const fs = require('fs');
+let autoUpdater = null;
+try {
+  ({ autoUpdater } = require('electron-updater'));
+} catch (err) {
+  autoUpdater = null;
+}
 
 const APP_NAME = 'BoardRunner';
 app.setName(APP_NAME);
@@ -36,6 +42,7 @@ let identifyWindows = [];
 let quitting = false;
 
 let watchdogInterval = null;
+let updateState = { status: 'idle', currentVersion: app.getVersion(), availableVersion: null, downloaded: false, lastCheckedAt: null, error: null };
 let displayChangeDebounce = null;
 let recoveryHooksRegistered = false;
 
@@ -78,7 +85,16 @@ function defaultConfig() {
       restartOnResume: true,
       restartOnDisplayChange: true,
       stagedPublishEnabled: true,
-      applyMode: 'next-rotation'
+      applyMode: 'next-rotation',
+      autoUpdateEnabled: true,
+      autoUpdateCheckOnStartup: true,
+      autoUpdateCheckIntervalMinutes: 60,
+      autoUpdateOwner: '',
+      autoUpdateRepo: 'BoardRunner',
+      autoUpdateAllowPrerelease: false,
+      autoUpdateAutoDownload: true,
+      autoUpdateInstallAutomatically: true,
+      autoUpdateInstallHourLocal: 3
     },
     playlists: [],
     screens: [
@@ -387,6 +403,7 @@ function saveConfig(config) {
   configCache = merged;
   applyStartupSetting();
   setupWatchdog();
+  configureAutoUpdater();
   writeLog('config', `Config saved to ${USER_CONFIG_PATH}`);
 }
 
@@ -1236,219 +1253,279 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
   }
 
   let finalBackgroundColor = null;
+  let scrollResult = {
+    applied: requestedOffsetPx === 0,
+    target: 'none',
+    requestedOffset: requestedOffsetPx,
+    appliedOffset: 0,
+    maxOffset: 0,
+    before: 0,
+    after: 0,
+    fallbackTransform: false,
+    error: null
+  };
+  let pageMetrics = { pageHeight: 0, viewportHeight: 0, scrollY: 0 };
 
-  // Initial sample, but do not trust it as final because Halo may still be settling.
   finalBackgroundColor = await sampleAndApplyBackground('initial');
 
-  // Re-sample after Halo has had time to render dark mode / widgets.
-  setTimeout(() => {
-    sampleAndApplyBackground('delayed-1s');
-  }, 1000);
+  setTimeout(() => { sampleAndApplyBackground('delayed-1s'); }, 1000);
+  setTimeout(() => { sampleAndApplyBackground('delayed-2.5s'); }, 2500);
+  setTimeout(() => { sampleAndApplyBackground('delayed-5s'); }, 5000);
 
-  setTimeout(() => {
-    sampleAndApplyBackground('delayed-2.5s');
-  }, 2500);
+  try {
+    const result = await wc.executeJavaScript(`
+      (() => {
+        const requestedOffset = ${requestedOffsetPx};
 
-  setTimeout(() => {
-    sampleAndApplyBackground('delayed-5s');
-  }, 5000);
+        function describe(el) {
+          if (!el) return 'none';
+          if (el === window) return 'window';
+          if (el === document.scrollingElement) return 'document.scrollingElement';
+          if (el === document.documentElement) return 'document.documentElement';
+          if (el === document.body) return 'document.body';
+          const tag = el.tagName ? el.tagName.toLowerCase() : 'unknown';
+          const id = el.id ? '#' + el.id : '';
+          const cls = el.className && typeof el.className === 'string'
+            ? '.' + el.className.trim().replace(/\\s+/g, '.')
+            : '';
+          return tag + id + cls;
+        }
 
-  if (requestedOffsetPx > 0) {
-    try {
-      const result = await wc.executeJavaScript(`
-        (() => {
-          const requestedOffset = ${requestedOffsetPx};
+        function clearFallbackTransform() {
+          try {
+            if (document.body && document.body.dataset.boardrunnerOffsetFallback === '1') {
+              document.body.style.transform = '';
+              document.body.style.transformOrigin = '';
+              document.body.style.willChange = '';
+              document.body.dataset.boardrunnerOffsetFallback = '0';
+            }
+          } catch (_) {}
+        }
 
-          function describe(el) {
-            if (!el) return 'none';
-            if (el === document.scrollingElement) return 'document.scrollingElement';
-            if (el === document.documentElement) return 'document.documentElement';
-            if (el === document.body) return 'document.body';
+        function getMetrics() {
+          const body = document.body;
+          const root = document.documentElement;
+          return {
+            pageHeight: Math.max(
+              body ? body.scrollHeight : 0,
+              root ? root.scrollHeight : 0,
+              body ? body.offsetHeight : 0,
+              root ? root.offsetHeight : 0
+            ),
+            viewportHeight: window.innerHeight || 0,
+            scrollY: window.scrollY || root.scrollTop || (body ? body.scrollTop : 0) || 0
+          };
+        }
 
-            const tag = el.tagName ? el.tagName.toLowerCase() : 'unknown';
-            const id = el.id ? '#' + el.id : '';
-            const cls = el.className && typeof el.className === 'string'
-              ? '.' + el.className.trim().replace(/\\s+/g, '.')
-              : '';
-
-            return tag + id + cls;
+        function getPotentialScrollTargets() {
+          const targets = [];
+          const seen = new Set();
+          function add(el) {
+            if (!el || seen.has(el)) return;
+            seen.add(el);
+            targets.push(el);
           }
+          add(document.scrollingElement);
+          add(document.documentElement);
+          add(document.body);
 
-          function getPotentialScrollTargets() {
-            const targets = new Set();
-
-            if (document.scrollingElement) targets.add(document.scrollingElement);
-            if (document.documentElement) targets.add(document.documentElement);
-            if (document.body) targets.add(document.body);
-
-            const centre = document.elementFromPoint(
-              Math.floor(window.innerWidth / 2),
-              Math.floor(window.innerHeight / 2)
-            );
-
-            let current = centre;
-
+          const points = [
+            [Math.floor(window.innerWidth / 2), Math.floor(window.innerHeight / 2)],
+            [Math.floor(window.innerWidth * 0.25), Math.floor(window.innerHeight / 2)],
+            [Math.floor(window.innerWidth * 0.75), Math.floor(window.innerHeight / 2)]
+          ];
+          points.forEach(([x, y]) => {
+            let current = document.elementFromPoint(x, y);
             while (current) {
-              targets.add(current);
+              add(current);
               current = current.parentElement;
             }
+          });
 
-            for (const el of Array.from(document.querySelectorAll('*'))) {
-              try {
-                const style = window.getComputedStyle(el);
-                const overflowY = style.overflowY;
-                const overflow = style.overflow;
+          Array.from(document.querySelectorAll('*')).forEach((el) => {
+            try {
+              const style = window.getComputedStyle(el);
+              const overflowY = style.overflowY;
+              const overflow = style.overflow;
+              const scrollLike = ['auto', 'scroll', 'overlay'].includes(overflowY) || ['auto', 'scroll', 'overlay'].includes(overflow);
+              const hasActualScroll = el.scrollHeight > el.clientHeight + 4;
+              if (scrollLike || hasActualScroll) add(el);
+            } catch (_) {}
+          });
 
-                const scrollLike =
-                  overflowY === 'auto' ||
-                  overflowY === 'scroll' ||
-                  overflowY === 'overlay' ||
-                  overflow === 'auto' ||
-                  overflow === 'scroll' ||
-                  overflow === 'overlay';
+          return targets;
+        }
 
-                const hasActualScroll = el.scrollHeight > el.clientHeight + 5;
+        function tryScrollTarget(el) {
+          if (!el) return null;
+          const isDocumentTarget = el === document.scrollingElement || el === document.documentElement || el === document.body;
+          const maxOffset = isDocumentTarget
+            ? Math.max(0, getMetrics().pageHeight - (window.innerHeight || 0))
+            : Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
 
-                if (scrollLike || hasActualScroll) {
-                  targets.add(el);
-                }
-              } catch (_) {}
-            }
+          if (maxOffset <= 3 && requestedOffset > 0) return null;
 
-            return Array.from(targets).filter(Boolean);
+          const appliedOffset = Math.min(requestedOffset, Math.max(0, maxOffset - 1));
+          const before = isDocumentTarget ? (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0) : (el.scrollTop || 0);
+
+          if (isDocumentTarget) {
+            window.scrollTo({ top: appliedOffset, left: 0, behavior: 'auto' });
+            document.documentElement.scrollTop = appliedOffset;
+            if (document.body) document.body.scrollTop = appliedOffset;
+          } else {
+            el.scrollTop = appliedOffset;
           }
 
-          function scoreTarget(el) {
-            const maxOffset = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
+          const after = isDocumentTarget ? (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0) : (el.scrollTop || 0);
+          const delta = Math.abs(after - appliedOffset);
+          return {
+            applied: requestedOffset === 0 || delta <= 3 || Math.abs(after - before) > 2,
+            target: describe(el),
+            requestedOffset,
+            appliedOffset,
+            maxOffset,
+            before,
+            after,
+            fallbackTransform: false
+          };
+        }
 
-            let score = maxOffset;
+        function applyFallbackTransform() {
+          const metrics = getMetrics();
+          const maxOffset = Math.max(0, metrics.pageHeight - metrics.viewportHeight);
+          const appliedOffset = maxOffset > 0 ? Math.min(requestedOffset, maxOffset) : requestedOffset;
 
-            const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-
-            if (rect) {
-              const visibleArea = Math.max(0, rect.width) * Math.max(0, rect.height);
-              score += Math.min(visibleArea / 1000, 500);
-            }
-
-            if (el === document.scrollingElement) score += 300;
-            if (el === document.documentElement) score += 200;
-            if (el === document.body) score += 100;
-
-            return score;
-          }
-
-          function getBestTarget() {
-            const targets = getPotentialScrollTargets()
-              .map((el) => ({
-                el,
-                maxOffset: Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)),
-                score: scoreTarget(el)
-              }))
-              .filter((x) => x.maxOffset > 5)
-              .sort((a, b) => b.score - a.score);
-
-            return targets.length ? targets[0] : null;
-          }
-
-          function applyAbsoluteScroll() {
-            const best = getBestTarget();
-
-            if (!best) {
-              return {
-                applied: false,
-                target: 'none',
-                requestedOffset,
-                appliedOffset: 0,
-                maxOffset: 0,
-                before: 0,
-                after: 0
-              };
-            }
-
-            const safetyBuffer = 25;
-            const maxSafeOffset = Math.max(0, best.maxOffset - safetyBuffer);
-            const appliedOffset = Math.min(requestedOffset, maxSafeOffset);
-
-            const el = best.el;
-            const before = el.scrollTop || 0;
-
-            if (
-              el === document.scrollingElement ||
-              el === document.documentElement ||
-              el === document.body
-            ) {
-              window.scrollTo(0, appliedOffset);
-              document.documentElement.scrollTop = appliedOffset;
-              document.body.scrollTop = appliedOffset;
-            } else {
-              el.scrollTop = appliedOffset;
-            }
-
-            const after = el.scrollTop || 0;
-
+          if (!document.body) {
             return {
-              applied: after !== before || appliedOffset === 0,
-              target: describe(el),
+              applied: false,
+              target: 'none',
               requestedOffset,
-              appliedOffset,
-              maxOffset: best.maxOffset,
-              before,
-              after
+              appliedOffset: 0,
+              maxOffset,
+              before: 0,
+              after: 0,
+              fallbackTransform: false
             };
           }
 
-          const first = applyAbsoluteScroll();
+          document.body.dataset.boardrunnerOffsetFallback = appliedOffset > 0 ? '1' : '0';
+          document.body.style.transformOrigin = 'top left';
+          document.body.style.willChange = 'transform';
+          document.body.style.transform = appliedOffset > 0 ? 'translateY(-' + appliedOffset + 'px)' : '';
 
-          setTimeout(applyAbsoluteScroll, 250);
-          setTimeout(applyAbsoluteScroll, 750);
-          setTimeout(applyAbsoluteScroll, 1500);
-          setTimeout(applyAbsoluteScroll, 3000);
-          setTimeout(applyAbsoluteScroll, 5000);
-
-          return first;
-        })();
-      `, true);
-
-      scrollResult = result || scrollResult;
-      writeLog(
-        logPrefix,
-        `Scroll offset result: requested=${result.requestedOffset}px applied=${result.appliedOffset}px max=${result.maxOffset}px target=${result.target} before=${result.before} after=${result.after}`
-      );
-
-      if (
-        result &&
-        result.appliedOffset > 0 &&
-        Number(result.after || 0) === Number(result.before || 0)
-      ) {
-        try {
-          const owner = wc.getOwnerBrowserWindow();
-          const bounds = owner.getBounds();
-
-          const fallbackDelta = Math.min(requestedOffsetPx, 300);
-
-          wc.sendInputEvent({
-            type: 'mouseWheel',
-            x: Math.floor(bounds.width / 2),
-            y: Math.floor(bounds.height / 2),
-            deltaY: fallbackDelta,
-            deltaX: 0,
-            canScroll: true
-          });
-
-          writeLog(logPrefix, `Sent limited native wheel fallback: ${fallbackDelta}px`);
-        } catch (wheelErr) {
-          writeLog(logPrefix, `Native wheel fallback failed: ${wheelErr.message}`);
+          return {
+            applied: true,
+            target: 'body.transformFallback',
+            requestedOffset,
+            appliedOffset,
+            maxOffset,
+            before: 0,
+            after: appliedOffset,
+            fallbackTransform: true
+          };
         }
-      }
-    } catch (scrollErr) {
-      writeLog(logPrefix, `Failed to apply scroll offset: ${scrollErr.message}`);
+
+        function applyBoardRunnerOffset() {
+          clearFallbackTransform();
+
+          if (requestedOffset <= 0) {
+            window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+            document.documentElement.scrollTop = 0;
+            if (document.body) document.body.scrollTop = 0;
+            return {
+              applied: true,
+              target: 'reset',
+              requestedOffset,
+              appliedOffset: 0,
+              maxOffset: Math.max(0, getMetrics().pageHeight - getMetrics().viewportHeight),
+              before: 0,
+              after: 0,
+              fallbackTransform: false
+            };
+          }
+
+          const targets = getPotentialScrollTargets()
+            .map((el) => {
+              const isDocumentTarget = el === document.scrollingElement || el === document.documentElement || el === document.body;
+              const maxOffset = isDocumentTarget
+                ? Math.max(0, getMetrics().pageHeight - (window.innerHeight || 0))
+                : Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
+              const rect = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+              const areaScore = rect ? Math.min(Math.max(0, rect.width) * Math.max(0, rect.height) / 1000, 800) : 0;
+              const documentBonus = isDocumentTarget ? 500 : 0;
+              return { el, maxOffset, score: maxOffset + areaScore + documentBonus };
+            })
+            .filter((item) => item.maxOffset > 3)
+            .sort((a, b) => b.score - a.score);
+
+          for (const item of targets) {
+            const result = tryScrollTarget(item.el);
+            if (result && result.applied && result.appliedOffset > 0) return result;
+          }
+
+          return applyFallbackTransform();
+        }
+
+        const first = applyBoardRunnerOffset();
+        window.__boardrunnerApplyOffset = applyBoardRunnerOffset;
+        setTimeout(applyBoardRunnerOffset, 100);
+        setTimeout(applyBoardRunnerOffset, 350);
+        setTimeout(applyBoardRunnerOffset, 800);
+        setTimeout(applyBoardRunnerOffset, 1500);
+        setTimeout(applyBoardRunnerOffset, 3000);
+        setTimeout(applyBoardRunnerOffset, 5000);
+
+        return {
+          ...first,
+          metrics: getMetrics()
+        };
+      })();
+    `, true);
+
+    if (result) {
+      scrollResult = {
+        applied: !!result.applied,
+        target: result.target || 'none',
+        requestedOffset: result.requestedOffset ?? requestedOffsetPx,
+        appliedOffset: result.appliedOffset ?? 0,
+        maxOffset: result.maxOffset ?? 0,
+        before: result.before ?? 0,
+        after: result.after ?? 0,
+        fallbackTransform: !!result.fallbackTransform,
+        error: null
+      };
+      pageMetrics = result.metrics || pageMetrics;
     }
+
+    writeLog(
+      logPrefix,
+      `Scroll offset result: requested=${scrollResult.requestedOffset}px applied=${scrollResult.appliedOffset}px max=${scrollResult.maxOffset}px target=${scrollResult.target} before=${scrollResult.before} after=${scrollResult.after} fallback=${scrollResult.fallbackTransform}`
+    );
+  } catch (scrollErr) {
+    scrollResult.error = scrollErr.message;
+    writeLog(logPrefix, `Failed to apply scroll offset: ${scrollErr.message}`);
+  }
+
+  try {
+    pageMetrics = await wc.executeJavaScript(`(() => {
+      const body = document.body;
+      const root = document.documentElement;
+      return {
+        pageHeight: Math.max(body ? body.scrollHeight : 0, root ? root.scrollHeight : 0, body ? body.offsetHeight : 0, root ? root.offsetHeight : 0),
+        viewportHeight: window.innerHeight || 0,
+        scrollY: window.scrollY || root.scrollTop || (body ? body.scrollTop : 0) || 0
+      };
+    })();`, true);
+  } catch (metricsErr) {
+    writeLog(logPrefix, `Failed to read page metrics: ${metricsErr.message}`);
   }
 
   return {
     zoomFactor,
     scrollOffsetPx: requestedOffsetPx,
-    sampledBackgroundColor: finalBackgroundColor
+    sampledBackgroundColor: finalBackgroundColor,
+    scrollResult,
+    pageMetrics
   };
 }
 
@@ -1948,13 +2025,188 @@ function getAdminState() {
       };
     }),
     detectedDisplays: getDetectedDisplays(),
-    runtimeScreens
+    runtimeScreens,
+    updateState
   };
 }
 
 function notifyAdminState() {
   if (adminWindow && !adminWindow.isDestroyed()) {
     adminWindow.webContents.send('app-state', getAdminState());
+  }
+}
+
+
+function setUpdateState(patch) {
+  updateState = {
+    ...updateState,
+    ...patch,
+    currentVersion: app.getVersion()
+  };
+  notifyAdminState();
+}
+
+function getAutoUpdateOwner() {
+  const owner = String(getSetting('autoUpdateOwner', '') || '').trim();
+  if (owner) return owner;
+  try {
+    const pkg = require(path.join(__dirname, 'package.json'));
+    const repo = pkg.repository && (pkg.repository.url || pkg.repository);
+    const match = String(repo || '').match(/github\.com[:/](.+?)\/(.+?)(?:\.git)?$/i);
+    return match ? match[1] : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function getAutoUpdateRepo() {
+  const repo = String(getSetting('autoUpdateRepo', 'BoardRunner') || '').trim();
+  if (repo) return repo;
+  try {
+    const pkg = require(path.join(__dirname, 'package.json'));
+    const raw = pkg.repository && (pkg.repository.url || pkg.repository);
+    const match = String(raw || '').match(/github\.com[:/](.+?)\/(.+?)(?:\.git)?$/i);
+    return match ? match[2] : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function configureAutoUpdater() {
+  if (!autoUpdater) {
+    setUpdateState({ status: 'disabled', error: 'electron-updater dependency is not installed' });
+    writeLog('update', 'Auto updater unavailable: electron-updater dependency not installed');
+    return false;
+  }
+
+  const enabled = !!getSetting('autoUpdateEnabled', true);
+  if (!enabled) {
+    setUpdateState({ status: 'disabled', error: null });
+    writeLog('update', 'Auto updater disabled by config');
+    return false;
+  }
+
+  const owner = getAutoUpdateOwner();
+  const repo = getAutoUpdateRepo();
+  if (!owner || !repo) {
+    setUpdateState({ status: 'not-configured', error: 'GitHub owner/repo not configured' });
+    writeLog('update', 'Auto updater not configured: set settings.autoUpdateOwner and settings.autoUpdateRepo');
+    return false;
+  }
+
+  autoUpdater.autoDownload = !!getSetting('autoUpdateAutoDownload', true);
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = !!getSetting('autoUpdateAllowPrerelease', false);
+  autoUpdater.setFeedURL({ provider: 'github', owner, repo });
+
+  if (!configureAutoUpdater.handlersRegistered) {
+    autoUpdater.on('checking-for-update', () => {
+      setUpdateState({ status: 'checking', lastCheckedAt: new Date().toISOString(), error: null });
+      writeLog('update', 'Checking for updates');
+    });
+    autoUpdater.on('update-available', (info) => {
+      setUpdateState({ status: 'available', availableVersion: info.version || null, downloaded: false, error: null });
+      writeLog('update', `Update available: ${info.version || 'unknown'}`);
+    });
+    autoUpdater.on('update-not-available', (info) => {
+      setUpdateState({ status: 'current', availableVersion: info.version || null, downloaded: false, error: null });
+      writeLog('update', 'No update available');
+    });
+    autoUpdater.on('download-progress', (progress) => {
+      setUpdateState({ status: 'downloading', progress: Math.round(progress.percent || 0), error: null });
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      setUpdateState({ status: 'downloaded', availableVersion: info.version || null, downloaded: true, progress: 100, error: null });
+      writeLog('update', `Update downloaded: ${info.version || 'unknown'}; will install on quit, when requested, or at the configured install hour`);
+      if (shouldInstallDownloadedUpdateNow()) {
+        installDownloadedUpdate('downloaded-during-install-window');
+      }
+    });
+    autoUpdater.on('error', (err) => {
+      setUpdateState({ status: 'error', error: err.message || String(err) });
+      writeLog('update', `Updater error: ${err.message || err}`);
+    });
+    configureAutoUpdater.handlersRegistered = true;
+  }
+
+  setUpdateState({ status: 'ready', error: null });
+  writeLog('update', `Auto updater configured for GitHub ${owner}/${repo}`);
+  return true;
+}
+
+async function checkForUpdatesManual() {
+  if (!app.isPackaged) {
+    setUpdateState({ status: 'dev-mode', error: 'Updater only runs in packaged builds' });
+    return { ok: false, error: 'Updater only runs in packaged builds' };
+  }
+  if (!configureAutoUpdater()) {
+    return { ok: false, error: updateState.error || 'Updater is not configured' };
+  }
+  try {
+    await autoUpdater.checkForUpdates();
+    return { ok: true, state: updateState };
+  } catch (err) {
+    setUpdateState({ status: 'error', error: err.message });
+    return { ok: false, error: err.message };
+  }
+}
+
+function installDownloadedUpdate(reason = 'manual') {
+  if (!autoUpdater || !updateState.downloaded) {
+    return { ok: false, error: 'No downloaded update is ready to install' };
+  }
+  writeLog('update', `Installing downloaded update now (${reason})`);
+  setUpdateState({ status: 'installing', error: null });
+  autoUpdater.quitAndInstall(false, true);
+  return { ok: true };
+}
+
+function shouldInstallDownloadedUpdateNow(date = new Date()) {
+  if (!updateState.downloaded) return false;
+  if (!getSetting('autoUpdateInstallAutomatically', true)) return false;
+  const preferredHour = Number(getSetting('autoUpdateInstallHourLocal', 3));
+  if (!Number.isFinite(preferredHour)) return false;
+  return date.getHours() === Math.max(0, Math.min(23, Math.floor(preferredHour)));
+}
+
+function setupAutoInstallScheduler() {
+  if (setupAutoInstallScheduler.interval) {
+    clearInterval(setupAutoInstallScheduler.interval);
+    setupAutoInstallScheduler.interval = null;
+  }
+
+  setupAutoInstallScheduler.interval = setInterval(() => {
+    try {
+      if (shouldInstallDownloadedUpdateNow()) {
+        installDownloadedUpdate('scheduled');
+      }
+    } catch (err) {
+      writeLog('update', `Scheduled update install failed: ${err.message}`);
+    }
+  }, 5 * 60 * 1000);
+}
+
+function setupAutoUpdateScheduler() {
+  if (!app.isPackaged) {
+    writeLog('update', 'Skipping auto updater in development mode');
+    return;
+  }
+  if (!configureAutoUpdater()) return;
+
+  if (getSetting('autoUpdateCheckOnStartup', true)) {
+    setTimeout(() => {
+      checkForUpdatesManual().catch((err) => writeLog('update', `Startup update check failed: ${err.message}`));
+    }, 15000);
+  }
+
+  setupAutoInstallScheduler();
+
+  const minutes = Number(getSetting('autoUpdateCheckIntervalMinutes', 60)) || 0;
+  if (minutes > 0) {
+    setInterval(() => {
+      checkForUpdatesManual().catch((err) => writeLog('update', `Scheduled update check failed: ${err.message}`));
+    }, minutes * 60 * 1000);
+    writeLog('update', `Auto update checks scheduled every ${minutes} minute(s)`);
   }
 }
 
@@ -2018,6 +2270,8 @@ function registerRecoveryHooks() {
 ipcMain.handle('get-config', async () => configCache);
 
 ipcMain.handle('get-state', async () => getAdminState());
+ipcMain.handle('check-for-updates', async () => checkForUpdatesManual());
+ipcMain.handle('install-downloaded-update', async () => installDownloadedUpdate());
 
 ipcMain.handle('get-detected-displays', async () => getDetectedDisplays());
 
@@ -2177,6 +2431,7 @@ ipcMain.handle('update-preview-view', async (_, dashboard) => {
     if (!previewWindow || previewWindow.isDestroyed()) {
       return { ok: false, error: 'Preview window is not open' };
     }
+    dashboard.url = sanitizeDashboardUrl(dashboard.url);
     const viewState = await applyDashboardView(previewWindow.webContents, dashboard, 'preview-live');
     previewWindow.setTitle(`${APP_NAME} Offset Studio - ${dashboard.name || 'Dashboard'} (${viewState.scrollOffsetPx}px offset)`);
     return { ok: true, previewDiagnostics: { scrollResult: viewState.scrollResult || null, pageMetrics: viewState.pageMetrics || null, zoomFactor: viewState.zoomFactor, scrollOffsetPx: viewState.scrollOffsetPx } };
@@ -2196,6 +2451,7 @@ app.whenReady().then(() => {
     createTray();
     createAdminWindow();
     setupWatchdog();
+    setupAutoUpdateScheduler();
     registerRecoveryHooks();
     startConfiguredScreens();
 

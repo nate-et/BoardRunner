@@ -37,6 +37,8 @@
         <button id="btnImportConfig" class="full" type="button">Import Config</button>
         <button id="btnOpenConfigFolder" class="full" type="button">Config Folder</button>
         <button id="btnOpenLogs" class="full" type="button">Logs</button>
+        <button id="btnCheckUpdates" class="full" type="button">Check Updates</button>
+        <button id="btnInstallUpdate" class="full hidden" type="button">Install Update</button>
       </div>
     </aside>
 
@@ -51,6 +53,7 @@
           <span id="statusStartup" class="status-pill">Startup: Off</span>
           <span id="statusKiosk" class="status-pill">Kiosk: On</span>
           <span id="statusUnsaved" class="status-pill hidden">Unsaved changes</span>
+          <span id="statusUpdate" class="status-pill">Update: Idle</span>
         </div>
       </header>
       <section id="errorBanner" class="error-banner hidden"></section>
@@ -207,6 +210,7 @@
             <label class="toggle-card"><div><strong>Start with Windows</strong><p>Launch at sign in</p></div><input type="checkbox" id="settingStartWithWindows"></label>
           </div>
           <div class="settings-inline"><label class="field small-field"><span>Identify Overlay Seconds</span><input type="number" id="settingIdentifyOverlaySeconds" min="1" step="1"></label></div>
+          <div class="update-note"><strong>Auto updates:</strong> BoardRunner checks GitHub Releases automatically and can install downloaded updates during the configured overnight maintenance window.</div>
         </div>
       </section>
     </main>
