@@ -1468,12 +1468,47 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
 
         const first = applyBoardRunnerOffset();
         window.__boardrunnerApplyOffset = applyBoardRunnerOffset;
-        setTimeout(applyBoardRunnerOffset, 100);
-        setTimeout(applyBoardRunnerOffset, 350);
-        setTimeout(applyBoardRunnerOffset, 800);
-        setTimeout(applyBoardRunnerOffset, 1500);
-        setTimeout(applyBoardRunnerOffset, 3000);
-        setTimeout(applyBoardRunnerOffset, 5000);
+        window.__boardrunnerOffsetState = {
+          requestedOffset,
+          repairs: 0,
+          observerEvents: 0
+        };
+
+        const reapplySchedule = [100,250,500,1000,2000,5000,10000,15000];
+        reapplySchedule.forEach(delay => setTimeout(() => {
+          applyBoardRunnerOffset();
+          if (window.__boardrunnerOffsetState) window.__boardrunnerOffsetState.repairs++;
+        }, delay));
+
+        let repairTimer = null;
+        function scheduleOffsetRepair() {
+          clearTimeout(repairTimer);
+          repairTimer = setTimeout(() => {
+            applyBoardRunnerOffset();
+            if (window.__boardrunnerOffsetState) window.__boardrunnerOffsetState.repairs++;
+          }, 250);
+        }
+
+        if (!window.__boardrunnerOffsetObserver && document.documentElement) {
+          window.__boardrunnerOffsetObserver = new MutationObserver(() => {
+            if (window.__boardrunnerOffsetState) window.__boardrunnerOffsetState.observerEvents++;
+            scheduleOffsetRepair();
+          });
+          window.__boardrunnerOffsetObserver.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true
+          });
+        }
+
+        setInterval(() => {
+          try {
+            const actual = window.scrollY || document.documentElement.scrollTop || (document.body ? document.body.scrollTop : 0) || 0;
+            if (Math.abs(actual - requestedOffset) > 15) {
+              applyBoardRunnerOffset();
+            }
+          } catch (_) {}
+        }, 3000);
 
         return {
           ...first,

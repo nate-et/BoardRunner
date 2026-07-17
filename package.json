@@ -1,6 +1,6 @@
 {
   "name": "boardrunner",
-  "version": "3.1.1-beta.2",
+  "version": "3.1.2",
   "description": "BoardRunner - enterprise wallboard display management for rotating live dashboards across multiple screens",
   "main": "main.js",
   "private": true,
