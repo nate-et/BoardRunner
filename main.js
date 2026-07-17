@@ -48,6 +48,16 @@ let recoveryHooksRegistered = false;
 
 const dashboardHealth = new Map();
 
+const gotTheSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotTheSingleInstanceLock) {
+  quitting = true;
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    showAdminWindow();
+  });
+}
+
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -1255,7 +1265,7 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
   let finalBackgroundColor = null;
   let scrollResult = {
     applied: requestedOffsetPx === 0,
-    target: 'none',
+    target: 'root-document',
     requestedOffset: requestedOffsetPx,
     appliedOffset: 0,
     maxOffset: 0,
@@ -1264,7 +1274,7 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
     fallbackTransform: false,
     error: null
   };
-  let pageMetrics = { pageHeight: 0, viewportHeight: 0, scrollY: 0 };
+  let pageMetrics = { pageHeight: 0, viewportHeight: 0, scrollY: 0, maxOffset: 0 };
 
   finalBackgroundColor = await sampleAndApplyBackground('initial');
 
@@ -1276,24 +1286,46 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
     const result = await wc.executeJavaScript(`
       (() => {
         const requestedOffset = ${requestedOffsetPx};
+        const tolerancePx = 10;
 
-        function describe(el) {
-          if (!el) return 'none';
-          if (el === window) return 'window';
-          if (el === document.scrollingElement) return 'document.scrollingElement';
-          if (el === document.documentElement) return 'document.documentElement';
-          if (el === document.body) return 'document.body';
-          const tag = el.tagName ? el.tagName.toLowerCase() : 'unknown';
-          const id = el.id ? '#' + el.id : '';
-          const cls = el.className && typeof el.className === 'string'
-            ? '.' + el.className.trim().replace(/\\s+/g, '.')
-            : '';
-          return tag + id + cls;
+        function getRootScroller() {
+          return document.scrollingElement || document.documentElement || document.body || null;
         }
 
-        function clearFallbackTransform() {
+        function getRootScrollY() {
+          const rootScroller = getRootScroller();
+          return Math.max(
+            0,
+            Number(window.scrollY || 0),
+            Number(document.documentElement ? document.documentElement.scrollTop || 0 : 0),
+            Number(document.body ? document.body.scrollTop || 0 : 0),
+            Number(rootScroller ? rootScroller.scrollTop || 0 : 0)
+          );
+        }
+
+        function getMetrics() {
+          const body = document.body;
+          const root = document.documentElement;
+          const rootScroller = getRootScroller();
+          const pageHeight = Math.max(
+            body ? body.scrollHeight || 0 : 0,
+            root ? root.scrollHeight || 0 : 0,
+            body ? body.offsetHeight || 0 : 0,
+            root ? root.offsetHeight || 0 : 0,
+            rootScroller ? rootScroller.scrollHeight || 0 : 0
+          );
+          const viewportHeight = Math.max(0, window.innerHeight || 0);
+          return {
+            pageHeight,
+            viewportHeight,
+            scrollY: getRootScrollY(),
+            maxOffset: Math.max(0, pageHeight - viewportHeight)
+          };
+        }
+
+        function clearPreviousBoardRunnerFallback() {
           try {
-            if (document.body && document.body.dataset.boardrunnerOffsetFallback === '1') {
+            if (document.body) {
               document.body.style.transform = '';
               document.body.style.transformOrigin = '';
               document.body.style.willChange = '';
@@ -1302,194 +1334,99 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
           } catch (_) {}
         }
 
-        function getMetrics() {
-          const body = document.body;
-          const root = document.documentElement;
-          return {
-            pageHeight: Math.max(
-              body ? body.scrollHeight : 0,
-              root ? root.scrollHeight : 0,
-              body ? body.offsetHeight : 0,
-              root ? root.offsetHeight : 0
-            ),
-            viewportHeight: window.innerHeight || 0,
-            scrollY: window.scrollY || root.scrollTop || (body ? body.scrollTop : 0) || 0
-          };
-        }
-
-        function getPotentialScrollTargets() {
-          const targets = [];
-          const seen = new Set();
-          function add(el) {
-            if (!el || seen.has(el)) return;
-            seen.add(el);
-            targets.push(el);
-          }
-          add(document.scrollingElement);
-          add(document.documentElement);
-          add(document.body);
-
-          const points = [
-            [Math.floor(window.innerWidth / 2), Math.floor(window.innerHeight / 2)],
-            [Math.floor(window.innerWidth * 0.25), Math.floor(window.innerHeight / 2)],
-            [Math.floor(window.innerWidth * 0.75), Math.floor(window.innerHeight / 2)]
-          ];
-          points.forEach(([x, y]) => {
-            let current = document.elementFromPoint(x, y);
-            while (current) {
-              add(current);
-              current = current.parentElement;
+        function forceRootScrollable() {
+          try {
+            if (document.documentElement) {
+              document.documentElement.style.overflowY = 'auto';
+              document.documentElement.style.overflowX = document.documentElement.style.overflowX || 'hidden';
             }
-          });
-
-          Array.from(document.querySelectorAll('*')).forEach((el) => {
-            try {
-              const style = window.getComputedStyle(el);
-              const overflowY = style.overflowY;
-              const overflow = style.overflow;
-              const scrollLike = ['auto', 'scroll', 'overlay'].includes(overflowY) || ['auto', 'scroll', 'overlay'].includes(overflow);
-              const hasActualScroll = el.scrollHeight > el.clientHeight + 4;
-              if (scrollLike || hasActualScroll) add(el);
-            } catch (_) {}
-          });
-
-          return targets;
+            if (document.body) {
+              document.body.style.overflowY = 'auto';
+              document.body.style.overflowX = document.body.style.overflowX || 'hidden';
+            }
+          } catch (_) {}
         }
 
-        function tryScrollTarget(el) {
-          if (!el) return null;
-          const isDocumentTarget = el === document.scrollingElement || el === document.documentElement || el === document.body;
-          const maxOffset = isDocumentTarget
-            ? Math.max(0, getMetrics().pageHeight - (window.innerHeight || 0))
-            : Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
+        function applyRootOffset() {
+          clearPreviousBoardRunnerFallback();
+          forceRootScrollable();
 
-          if (maxOffset <= 3 && requestedOffset > 0) return null;
+          const before = getRootScrollY();
+          const metricsBefore = getMetrics();
+          const maxOffset = metricsBefore.maxOffset;
+          const appliedOffset = Math.min(requestedOffset, maxOffset);
+          const rootScroller = getRootScroller();
 
-          const appliedOffset = Math.min(requestedOffset, Math.max(0, maxOffset - 1));
-          const before = isDocumentTarget ? (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0) : (el.scrollTop || 0);
-
-          if (isDocumentTarget) {
+          try {
             window.scrollTo({ top: appliedOffset, left: 0, behavior: 'auto' });
-            document.documentElement.scrollTop = appliedOffset;
-            if (document.body) document.body.scrollTop = appliedOffset;
-          } else {
-            el.scrollTop = appliedOffset;
+          } catch (_) {
+            try { window.scrollTo(0, appliedOffset); } catch (_) {}
           }
 
-          const after = isDocumentTarget ? (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0) : (el.scrollTop || 0);
-          const delta = Math.abs(after - appliedOffset);
-          return {
-            applied: requestedOffset === 0 || delta <= 3 || Math.abs(after - before) > 2,
-            target: describe(el),
+          try {
+            if (rootScroller) rootScroller.scrollTop = appliedOffset;
+            if (document.documentElement) document.documentElement.scrollTop = appliedOffset;
+            if (document.body) document.body.scrollTop = appliedOffset;
+          } catch (_) {}
+
+          const after = getRootScrollY();
+          const success = requestedOffset === 0 || Math.abs(after - appliedOffset) <= tolerancePx;
+          const result = {
+            applied: success,
+            target: 'root-document',
             requestedOffset,
             appliedOffset,
             maxOffset,
             before,
             after,
-            fallbackTransform: false
+            fallbackTransform: false,
+            metrics: getMetrics(),
+            repairs: window.__boardrunnerOffsetState ? window.__boardrunnerOffsetState.repairs || 0 : 0,
+            observerEvents: window.__boardrunnerOffsetState ? window.__boardrunnerOffsetState.observerEvents || 0 : 0,
+            mode: 'root-document-only'
           };
+
+          window.__boardrunnerLastOffsetResult = result;
+          return result;
         }
 
-        function applyFallbackTransform() {
-          const metrics = getMetrics();
-          const maxOffset = Math.max(0, metrics.pageHeight - metrics.viewportHeight);
-          const appliedOffset = maxOffset > 0 ? Math.min(requestedOffset, maxOffset) : requestedOffset;
-
-          if (!document.body) {
-            return {
-              applied: false,
-              target: 'none',
-              requestedOffset,
-              appliedOffset: 0,
-              maxOffset,
-              before: 0,
-              after: 0,
-              fallbackTransform: false
-            };
-          }
-
-          document.body.dataset.boardrunnerOffsetFallback = appliedOffset > 0 ? '1' : '0';
-          document.body.style.transformOrigin = 'top left';
-          document.body.style.willChange = 'transform';
-          document.body.style.transform = appliedOffset > 0 ? 'translateY(-' + appliedOffset + 'px)' : '';
-
-          return {
-            applied: true,
-            target: 'body.transformFallback',
-            requestedOffset,
-            appliedOffset,
-            maxOffset,
-            before: 0,
-            after: appliedOffset,
-            fallbackTransform: true
-          };
+        if (window.__boardrunnerOffsetObserver) {
+          try { window.__boardrunnerOffsetObserver.disconnect(); } catch (_) {}
+          window.__boardrunnerOffsetObserver = null;
+        }
+        if (window.__boardrunnerOffsetRepairInterval) {
+          clearInterval(window.__boardrunnerOffsetRepairInterval);
+          window.__boardrunnerOffsetRepairInterval = null;
+        }
+        if (window.__boardrunnerOffsetRepairTimer) {
+          clearTimeout(window.__boardrunnerOffsetRepairTimer);
+          window.__boardrunnerOffsetRepairTimer = null;
         }
 
-        function applyBoardRunnerOffset() {
-          clearFallbackTransform();
-
-          if (requestedOffset <= 0) {
-            window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-            document.documentElement.scrollTop = 0;
-            if (document.body) document.body.scrollTop = 0;
-            return {
-              applied: true,
-              target: 'reset',
-              requestedOffset,
-              appliedOffset: 0,
-              maxOffset: Math.max(0, getMetrics().pageHeight - getMetrics().viewportHeight),
-              before: 0,
-              after: 0,
-              fallbackTransform: false
-            };
-          }
-
-          const targets = getPotentialScrollTargets()
-            .map((el) => {
-              const isDocumentTarget = el === document.scrollingElement || el === document.documentElement || el === document.body;
-              const maxOffset = isDocumentTarget
-                ? Math.max(0, getMetrics().pageHeight - (window.innerHeight || 0))
-                : Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
-              const rect = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-              const areaScore = rect ? Math.min(Math.max(0, rect.width) * Math.max(0, rect.height) / 1000, 800) : 0;
-              const documentBonus = isDocumentTarget ? 500 : 0;
-              return { el, maxOffset, score: maxOffset + areaScore + documentBonus };
-            })
-            .filter((item) => item.maxOffset > 3)
-            .sort((a, b) => b.score - a.score);
-
-          for (const item of targets) {
-            const result = tryScrollTarget(item.el);
-            if (result && result.applied && result.appliedOffset > 0) return result;
-          }
-
-          return applyFallbackTransform();
-        }
-
-        const first = applyBoardRunnerOffset();
-        window.__boardrunnerApplyOffset = applyBoardRunnerOffset;
         window.__boardrunnerOffsetState = {
           requestedOffset,
           repairs: 0,
-          observerEvents: 0
+          observerEvents: 0,
+          mode: 'root-document-only'
         };
+        window.__boardrunnerApplyOffset = applyRootOffset;
 
-        const reapplySchedule = [100,250,500,1000,2000,5000,10000,15000];
-        reapplySchedule.forEach(delay => setTimeout(() => {
-          applyBoardRunnerOffset();
-          if (window.__boardrunnerOffsetState) window.__boardrunnerOffsetState.repairs++;
-        }, delay));
-
-        let repairTimer = null;
         function scheduleOffsetRepair() {
-          clearTimeout(repairTimer);
-          repairTimer = setTimeout(() => {
-            applyBoardRunnerOffset();
+          clearTimeout(window.__boardrunnerOffsetRepairTimer);
+          window.__boardrunnerOffsetRepairTimer = setTimeout(() => {
+            applyRootOffset();
             if (window.__boardrunnerOffsetState) window.__boardrunnerOffsetState.repairs++;
           }, 250);
         }
 
-        if (!window.__boardrunnerOffsetObserver && document.documentElement) {
+        const first = applyRootOffset();
+        const reapplySchedule = [100, 250, 500, 1000, 2000, 5000, 10000, 15000];
+        reapplySchedule.forEach((delay) => setTimeout(() => {
+          applyRootOffset();
+          if (window.__boardrunnerOffsetState) window.__boardrunnerOffsetState.repairs++;
+        }, delay));
+
+        if (document.documentElement) {
           window.__boardrunnerOffsetObserver = new MutationObserver(() => {
             if (window.__boardrunnerOffsetState) window.__boardrunnerOffsetState.observerEvents++;
             scheduleOffsetRepair();
@@ -1501,32 +1438,34 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
           });
         }
 
-        setInterval(() => {
+        window.__boardrunnerOffsetRepairInterval = setInterval(() => {
           try {
-            const actual = window.scrollY || document.documentElement.scrollTop || (document.body ? document.body.scrollTop : 0) || 0;
-            if (Math.abs(actual - requestedOffset) > 15) {
-              applyBoardRunnerOffset();
+            const actual = getRootScrollY();
+            const expected = Math.min(requestedOffset, getMetrics().maxOffset);
+            if (Math.abs(actual - expected) > 15) {
+              applyRootOffset();
+              if (window.__boardrunnerOffsetState) window.__boardrunnerOffsetState.repairs++;
             }
           } catch (_) {}
         }, 3000);
 
-        return {
-          ...first,
-          metrics: getMetrics()
-        };
+        return first;
       })();
     `, true);
 
     if (result) {
       scrollResult = {
         applied: !!result.applied,
-        target: result.target || 'none',
+        target: result.target || 'root-document',
         requestedOffset: result.requestedOffset ?? requestedOffsetPx,
         appliedOffset: result.appliedOffset ?? 0,
         maxOffset: result.maxOffset ?? 0,
         before: result.before ?? 0,
         after: result.after ?? 0,
-        fallbackTransform: !!result.fallbackTransform,
+        fallbackTransform: false,
+        repairs: result.repairs ?? 0,
+        observerEvents: result.observerEvents ?? 0,
+        mode: result.mode || 'root-document-only',
         error: null
       };
       pageMetrics = result.metrics || pageMetrics;
@@ -1534,25 +1473,42 @@ async function applyDashboardView(wc, dashboard, logPrefix) {
 
     writeLog(
       logPrefix,
-      `Scroll offset result: requested=${scrollResult.requestedOffset}px applied=${scrollResult.appliedOffset}px max=${scrollResult.maxOffset}px target=${scrollResult.target} before=${scrollResult.before} after=${scrollResult.after} fallback=${scrollResult.fallbackTransform}`
+      `Root offset result: requested=${scrollResult.requestedOffset}px applied=${scrollResult.appliedOffset}px max=${scrollResult.maxOffset}px target=${scrollResult.target} before=${scrollResult.before} after=${scrollResult.after} repairs=${scrollResult.repairs || 0} observerEvents=${scrollResult.observerEvents || 0}`
     );
   } catch (scrollErr) {
     scrollResult.error = scrollErr.message;
-    writeLog(logPrefix, `Failed to apply scroll offset: ${scrollErr.message}`);
+    writeLog(logPrefix, `Failed to apply root offset: ${scrollErr.message}`);
   }
 
   try {
     pageMetrics = await wc.executeJavaScript(`(() => {
       const body = document.body;
       const root = document.documentElement;
+      const rootScroller = document.scrollingElement || root || body;
+      const pageHeight = Math.max(
+        body ? body.scrollHeight || 0 : 0,
+        root ? root.scrollHeight || 0 : 0,
+        body ? body.offsetHeight || 0 : 0,
+        root ? root.offsetHeight || 0 : 0,
+        rootScroller ? rootScroller.scrollHeight || 0 : 0
+      );
+      const viewportHeight = window.innerHeight || 0;
+      const scrollY = Math.max(
+        0,
+        Number(window.scrollY || 0),
+        Number(root ? root.scrollTop || 0 : 0),
+        Number(body ? body.scrollTop || 0 : 0),
+        Number(rootScroller ? rootScroller.scrollTop || 0 : 0)
+      );
       return {
-        pageHeight: Math.max(body ? body.scrollHeight : 0, root ? root.scrollHeight : 0, body ? body.offsetHeight : 0, root ? root.offsetHeight : 0),
-        viewportHeight: window.innerHeight || 0,
-        scrollY: window.scrollY || root.scrollTop || (body ? body.scrollTop : 0) || 0
+        pageHeight,
+        viewportHeight,
+        scrollY,
+        maxOffset: Math.max(0, pageHeight - viewportHeight)
       };
     })();`, true);
   } catch (metricsErr) {
-    writeLog(logPrefix, `Failed to read page metrics: ${metricsErr.message}`);
+    writeLog(logPrefix, `Failed to read root page metrics: ${metricsErr.message}`);
   }
 
   return {
@@ -1848,7 +1804,7 @@ function identifyDisplays() {
         </div>
       </body>
       </html>
-    `; 
+    `;
 
     overlay.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     overlay.once('ready-to-show', () => overlay.showInactive());
