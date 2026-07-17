@@ -1848,7 +1848,7 @@ function identifyDisplays() {
         </div>
       </body>
       </html>
-    `;
+    `; 
 
     overlay.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     overlay.once('ready-to-show', () => overlay.showInactive());
